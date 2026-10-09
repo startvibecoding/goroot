@@ -133,6 +133,11 @@ These were each a real bug. Read before touching namespaces/mounts.
    (`NoUser=true`) and can use any uid.
 
 7. **Exit codes must propagate**: signal death → `128 + signum`.
+8. **Read-only mounts must degrade, not fail.** `mount(MS_BIND|MS_REMOUNT|MS_RDONLY)`
+   returns `EPERM` on overlayfs (the rootfs of GitHub's CI runners). `setReadonly`
+   therefore tries `mount_setattr(2)` first and only warns if none of the methods
+   work — a failed read-only enforcement must never abort the container, or a
+   single default `--ro-bind /etc/resolv.conf` takes down every run.
 
 ## Built-in default rootfs
 

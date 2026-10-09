@@ -86,7 +86,7 @@ func setupContainer(spec *Spec) error {
 	if err := unix.Mount("sysfs", filepath.Join(root, "sys"), "sysfs", unix.MS_RDONLY|unix.MS_NOSUID|unix.MS_NODEV|unix.MS_NOEXEC, ""); err != nil {
 		sysDst := filepath.Join(root, "sys")
 		if berr := unix.Mount("/sys", sysDst, "", unix.MS_BIND|unix.MS_REC, ""); berr == nil {
-			_ = unix.Mount("", sysDst, "", unix.MS_BIND|unix.MS_REMOUNT|unix.MS_RDONLY|unix.MS_REC, "")
+			_ = setReadonly(sysDst)
 		} else {
 			warnf("/sys unavailable (share-net? underlying sysfs belongs to the host netns)")
 		}
@@ -237,14 +237,33 @@ func applyBind(root string, b Bind) error {
 	}
 
 	if err := unix.Mount(src, target, "", unix.MS_BIND|unix.MS_REC, ""); err != nil {
-		return fmt.Errorf("bind %s -> %s: %w", src, dst, err)
+		if err2 := unix.Mount(src, target, "", unix.MS_BIND, ""); err2 != nil {
+			return fmt.Errorf("bind %s -> %s: %w", src, dst, err)
+		}
 	}
 	if b.RO {
-		if err := unix.Mount("", target, "", unix.MS_BIND|unix.MS_REMOUNT|unix.MS_RDONLY|unix.MS_REC, ""); err != nil {
-			return fmt.Errorf("remount ro %s: %w", dst, err)
+		if err := setReadonly(target); err != nil {
+			warnf("could not make %s read-only (%v); leaving it writable", dst, err)
 		}
 	}
 	return nil
+}
+
+// setReadonly makes the mount at target read-only. It prefers mount_setattr(2),
+// which works on filesystems where the classic bind remount fails with EPERM
+// (notably overlayfs, used by CI runners).
+func setReadonly(target string) error {
+	attr := &unix.MountAttr{Attr_set: unix.MOUNT_ATTR_RDONLY}
+	if err := unix.MountSetattr(unix.AT_FDCWD, target, unix.AT_RECURSIVE, attr); err == nil {
+		return nil
+	}
+	if err := unix.MountSetattr(unix.AT_FDCWD, target, 0, attr); err == nil {
+		return nil
+	}
+	if err := unix.Mount("", target, "", unix.MS_BIND|unix.MS_REMOUNT|unix.MS_RDONLY, ""); err == nil {
+		return nil
+	}
+	return unix.Mount("", target, "", unix.MS_BIND|unix.MS_REMOUNT|unix.MS_RDONLY|unix.MS_REC, "")
 }
 
 func pivotRoot(root string) error {
