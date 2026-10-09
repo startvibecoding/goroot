@@ -19,6 +19,7 @@ import (
 type Sandbox struct {
 	spec *Spec
 	cmd  *exec.Cmd
+	cg   *cgroup
 }
 
 // prepare resolves the rootfs and applies shared defaults.
@@ -145,24 +146,126 @@ func buildCommand(spec *Spec, io Stdio, caps Caps) (*exec.Cmd, error) {
 	return cmd, nil
 }
 
+// setupCgroup decides how the container's resource limits are enforced. It
+// prefers cgroup v2 and falls back to rlimits, wiring the chosen mechanism into
+// the spec (so the child applies whatever rlimits are needed). It returns a
+// cgroup to attach the container to, or nil.
+func setupCgroup(spec *Spec) (*cgroup, error) {
+	// RLIMIT_CPU is applied regardless of the mechanism (cgroups have no
+	// cumulative CPU-time budget equivalent).
+	if spec.CPUTime > 0 {
+		spec.RlimitCPU = spec.CPUTime
+	}
+	if !spec.needsCgroup() {
+		return nil, nil
+	}
+	if !spec.NoCgroup {
+		c, err := newCgroup(spec)
+		if err == nil {
+			return c, nil
+		}
+		warnf("cgroup limits unavailable (%v); using rlimits", err)
+	} else {
+		warnf("cgroup limits disabled (--no-cgroup); using rlimits")
+	}
+	fallbackRlimits(spec)
+	return nil, nil
+}
+
+// fallbackRlimits fills in the rlimit fields for limits that cgroups would have
+// handled, warning about the ones rlimits cannot express.
+func fallbackRlimits(spec *Spec) {
+	if spec.MemoryMax > 0 {
+		spec.RlimitAS = spec.MemoryMax
+	}
+	if spec.MemoryHigh > 0 {
+		warnf("memory.high (soft limit) needs cgroups; ignored")
+	}
+	if spec.CPUQuota > 0 {
+		warnf("cpu quota (--cpus) needs cgroups; not enforceable via rlimit " +
+			"(consider --cpu-time for a cumulative CPU-second budget)")
+	}
+	if spec.PidsMax > 0 {
+		if spec.NoUser || os.Geteuid() == 0 {
+			spec.RlimitNPROC = spec.PidsMax
+		} else {
+			warnf("pids limit needs cgroups; RLIMIT_NPROC is host-wide and unsafe rootless")
+		}
+	}
+}
+
 // Start prepares and launches the container without waiting for it.
 func Start(spec *Spec, io Stdio) (*Sandbox, error) {
 	if err := prepare(spec); err != nil {
 		return nil, err
 	}
-	cmd, err := buildCommand(spec, io, Detect())
+	caps := Detect()
+
+	cg, err := setupCgroup(spec)
 	if err != nil {
 		return nil, err
 	}
-	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("start container: %w", err)
+	cmd, err := buildCommand(spec, io, caps)
+	if err != nil {
+		if cg != nil {
+			cg.close()
+		}
+		return nil, err
 	}
-	return &Sandbox{spec: spec, cmd: cmd}, nil
+
+	// Prefer placing the container into its cgroup atomically at clone time
+	// (CLONE_INTO_CGROUP) so the whole process tree is contained from birth.
+	fd := -1
+	if cg != nil {
+		if f, ferr := cg.openFD(); ferr == nil {
+			fd = f
+			cmd.SysProcAttr.UseCgroupFD = true
+			cmd.SysProcAttr.CgroupFD = f
+		} else {
+			warnf("open cgroup fd: %v; attaching by pid instead", ferr)
+		}
+	}
+
+	if err := cmd.Start(); err != nil {
+		if fd < 0 {
+			if cg != nil {
+				cg.close()
+			}
+			return nil, fmt.Errorf("start container: %w", err)
+		}
+		// CLONE_INTO_CGROUP can be refused (older kernel or combined with a
+		// user namespace); retry without it and attach the pid afterwards.
+		unix.Close(fd)
+		fd = -1
+		warnf("CLONE_INTO_CGROUP failed (%v); retrying with pid attach", err)
+		cmd2, err2 := buildCommand(spec, io, caps)
+		if err2 != nil {
+			cg.close()
+			return nil, err2
+		}
+		cmd = cmd2
+		if err = cmd.Start(); err != nil {
+			cg.close()
+			return nil, fmt.Errorf("start container: %w", err)
+		}
+	}
+	if fd >= 0 {
+		unix.Close(fd)
+	} else if cg != nil {
+		if err := cg.addPID(cmd.Process.Pid); err != nil {
+			warnf("attach container to cgroup: %v", err)
+		}
+	}
+	return &Sandbox{spec: spec, cmd: cmd, cg: cg}, nil
 }
 
 // Wait waits for the container and returns its process exit code.
 func (s *Sandbox) Wait() (int, error) {
-	return waitExitCode(s.cmd)
+	code, err := waitExitCode(s.cmd)
+	if s.cg != nil {
+		s.cg.close()
+	}
+	return code, err
 }
 
 // Pid returns the pid (in the caller's PID namespace) of the container init.

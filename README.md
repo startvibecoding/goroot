@@ -146,6 +146,12 @@ goroot version
 | `--no-resolv` | do not auto-bind the host `/etc/resolv.conf` |
 | `--no-pid` / `--no-ipc` / `--no-uts` | do not create that namespace |
 | `-u, --uid N` / `-g, --gid N` | run as that identity inside (see limitations) |
+| `--memory SIZE` | hard memory ceiling (e.g. `512m`, `1g`) |
+| `--memory-high SIZE` | soft memory ceiling that only throttles reclaim (cgroup only) |
+| `--cpus N` | CPU bandwidth in cores (e.g. `0.5`) |
+| `--cpu-time N` | kill after N seconds of CPU time (`RLIMIT_CPU`) |
+| `--pids N` | max number of tasks/threads |
+| `--no-cgroup` | force the rlimit fallback |
 | `--init` | run a tiny init as PID 1 (reaps zombies, forwards signals) |
 | `--keep-env` | keep the host environment variables |
 
@@ -154,6 +160,21 @@ goroot version
 Defaults: `--root` = built-in Alpine minirootfs, shared host network, host
 `/etc/resolv.conf` bound read-only, and a shell auto-selected from
 `/bin/sh`, `/bin/bash`, `/bin/zsh`, `/bin/fish` (in that order).
+
+## Resource limits
+
+Limits are enforced with **cgroup v2** when the host delegates a writable cgroup
+subtree to the user (systemd's `user@.service` does this by default via
+`Delegate=`) — the precise path: `memory.max`, `memory.high`, `cpu.max`,
+`pids.max`, with the container started inside its own cgroup via
+`CLONE_INTO_CGROUP` so the whole process tree is contained from birth.
+
+When no delegated cgroup is available (e.g. inside many CI containers), the
+runtime degrades to **rlimits** and warns: `--memory` becomes `RLIMIT_AS` and
+`--cpu-time` is `RLIMIT_CPU`. `--cpus` (a bandwidth quota) and `--pids` cannot
+be expressed as rlimits and are skipped with a warning; `--memory-high` is
+cgroup-only. Pass `--no-cgroup` to force the rlimit path. `goroot doctor`
+reports which path this host uses.
 
 ## How it works
 
@@ -315,7 +336,8 @@ handy for exercising the degradation paths.
 - **`/sys` under `--share-net`**: sysfs is tied to the network namespace, so when
   sharing the host netns only the host `/sys` can be bind-mounted (read-only),
   bringing along the host's submounts.
-- **No cgroup limits / seccomp filtering yet**: currently only namespace isolation.
+- **No seccomp filtering yet**: CPU, memory and pids limits are supported (see
+  *Resource limits*), but syscall filtering is not.
 - Files in the rootfs are best owned by your user (unpacking with `goroot extract`
   does this); otherwise files that aren't yours appear as `nobody` and may be
   unreadable inside.

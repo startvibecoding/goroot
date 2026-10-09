@@ -124,6 +124,12 @@ goroot version
 | `--no-resolv` | 不自动挂载主机 `/etc/resolv.conf` |
 | `--no-pid` / `--no-ipc` / `--no-uts` | 不创建对应命名空间 |
 | `-u, --uid N` / `-g, --gid N` | 容器内运行身份（见下方限制） |
+| `--memory SIZE` | 内存硬上限（如 `512m`、`1g`） |
+| `--memory-high SIZE` | 内存软上限（仅触发回收节流，需 cgroup） |
+| `--cpus N` | CPU 带宽（核数，如 `0.5`） |
+| `--cpu-time N` | 累计 CPU 时间超过 N 秒即杀死（`RLIMIT_CPU`） |
+| `--pids N` | 任务/线程数上限 |
+| `--no-cgroup` | 强制使用 rlimit 兜底 |
 | `--init` | 以微型 init 作 PID 1（回收僵尸、转发信号） |
 | `--keep-env` | 保留主机环境变量 |
 
@@ -131,6 +137,19 @@ goroot version
 
 默认值：`--root` = 内置 Alpine minirootfs；共享主机网络；主机 `/etc/resolv.conf`
 只读挂入；shell 按 `/bin/sh`、`/bin/bash`、`/bin/zsh`、`/bin/fish` 顺序自动选择。
+
+## 资源限制
+
+当宿主把可写的 cgroup 子树委派给用户时（systemd 的 `user@.service` 通过
+`Delegate=` 默认如此），限制用 **cgroup v2** 精确执行：`memory.max`、
+`memory.high`、`cpu.max`、`pids.max`，并借助 `CLONE_INTO_CGROUP` 让容器从
+诞生起就在自己的 cgroup 内（整个进程树都被纳入）。
+
+当没有可委派的 cgroup 时（例如很多 CI 容器内部），运行时降级为 **rlimit** 并
+给出警告：`--memory` 变成 `RLIMIT_AS`，`--cpu-time` 即 `RLIMIT_CPU`。而
+`--cpus`（带宽配额）和 `--pids` 无法用 rlimit 表达，会被跳过并警告；
+`--memory-high` 仅 cgroup 支持。加 `--no-cgroup` 可强制走 rlimit 路径。
+`goroot doctor` 会显示当前宿主用的是哪条路径。
 
 ## 工作原理
 
@@ -276,7 +295,8 @@ hostname），网络命名空间不可用就**不**去拉起主机的 `lo`。
   `nobody(65534)`（仅显示影响，文件权限不受影响）。
 - **`--share-net` 下 `/sys`**：sysfs 绑定在 network namespace 上，共享主机 netns
   时只能 bind 主机 `/sys`（只读），会带上主机的子挂载。
-- **尚无 cgroup 资源限制 / seccomp 过滤**：当前只做命名空间隔离。
+- **尚无 seccomp 过滤**：已支持 CPU/内存/PID 数量限制（见「资源限制」），但不做
+  系统调用过滤。
 - rootfs 内的文件最好由当前用户拥有（用 `goroot extract` 解包即可）；否则那些
   不属于你的文件在容器内会显示为 `nobody` 且可能不可读。
 

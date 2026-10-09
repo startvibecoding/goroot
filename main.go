@@ -75,6 +75,12 @@ run options:
       --no-uts          do not create a UTS namespace
   -u, --uid N           uid to run as inside the container (default: 0)
   -g, --gid N           gid to run as inside the container (default: 0)
+      --memory SIZE     hard memory limit (e.g. 512m, 1g); cgroup, else RLIMIT_AS
+      --memory-high SIZE soft memory limit, throttles reclaim (cgroup only)
+      --cpus N          CPU bandwidth in cores (e.g. 0.5); cgroup cpu.max
+      --cpu-time N      kill after N seconds of CPU time (RLIMIT_CPU)
+      --pids N          max number of tasks/threads (cgroup pids.max)
+      --no-cgroup       force the rlimit fallback for limits
       --keep-env        keep the host environment
   -h, --help            show this help
 
@@ -179,6 +185,18 @@ func buildRunSpec(args []string) *sandbox.Spec {
 			spec.UID = atoiOr(next(), a)
 		case "-g", "--gid":
 			spec.GID = atoiOr(next(), a)
+		case "--memory":
+			spec.MemoryMax = parseSize(next(), a)
+		case "--memory-high":
+			spec.MemoryHigh = parseSize(next(), a)
+		case "--cpus":
+			spec.CPUQuota = parseFloatOr(next(), a)
+		case "--cpu-time":
+			spec.CPUTime = int64(atoiOr(next(), a))
+		case "--pids":
+			spec.PidsMax = int64(atoiOr(next(), a))
+		case "--no-cgroup":
+			spec.NoCgroup = true
 		case "-h", "--help":
 			usage()
 			os.Exit(0)
@@ -227,6 +245,42 @@ func atoiOr(s, flag string) int {
 		fatal("run: flag %s: invalid number %q", flag, s)
 	}
 	return n
+}
+
+func parseFloatOr(s, flag string) float64 {
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		fatal("run: flag %s: invalid number %q", flag, s)
+	}
+	return f
+}
+
+// parseSize parses a human byte size such as "512", "512m", "1g" (binary
+// units; a trailing b/B is ignored).
+func parseSize(s, flag string) int64 {
+	orig := s
+	if len(s) > 1 && (s[len(s)-1] == 'b' || s[len(s)-1] == 'B') {
+		s = s[:len(s)-1]
+	}
+	if s == "" {
+		fatal("run: flag %s: invalid size %q", flag, orig)
+	}
+	mult := float64(1)
+	switch s[len(s)-1] {
+	case 'k', 'K':
+		mult, s = 1<<10, s[:len(s)-1]
+	case 'm', 'M':
+		mult, s = 1<<20, s[:len(s)-1]
+	case 'g', 'G':
+		mult, s = 1<<30, s[:len(s)-1]
+	case 't', 'T':
+		mult, s = 1<<40, s[:len(s)-1]
+	}
+	n, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
+	if err != nil || n < 0 {
+		fatal("run: flag %s: invalid size %q", flag, orig)
+	}
+	return int64(n * mult)
 }
 
 func fatal(format string, a ...any) {

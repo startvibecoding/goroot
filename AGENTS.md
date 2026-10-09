@@ -64,6 +64,7 @@ Three packages:
 | `sandbox/spec.go` | exported `Spec`, `Bind`, `Stdio`, JSON to child |
 | `sandbox/sandbox.go` | parent side: `Start`/`Run`/`Wait`/`Signal`/`Kill`, degrade, clone flags |
 | `sandbox/init_linux.go` | child side: `Init` (re-exec entry), mounts, `pivot_root`, exec, tiny init |
+| `sandbox/cgroup_linux.go` | parent side: rootless cgroup v2 creation, limit writing, `DetectCgroup` |
 | `sandbox/probe_linux.go` | `probeNS`, `Detect` (`Caps`), `GOROOT_DISABLE_NS` hook |
 | `sandbox/net_linux.go` | bring up `lo`, `isTerminal` |
 | `sandbox/extract.go` | `Extract` tar/.gz/.bz2 unpacking |
@@ -139,7 +140,32 @@ These were each a real bug. Read before touching namespaces/mounts.
    work — a failed read-only enforcement must never abort the container, or a
    single default `--ro-bind /etc/resolv.conf` takes down every run.
 
-## Built-in default rootfs
+## Resource limits (CPU / memory / pids)
+
+Limits live in `Spec` (`MemoryMax`, `MemoryHigh`, `CPUQuota`, `CPUTime`,
+`PidsMax`) and are parsed from `--memory[ -high]`, `--cpus`, `--cpu-time`,
+`--pids` in `cmdRun`. Two enforcement mechanisms, chosen automatically:
+
+1. **cgroup v2 (preferred).** `sandbox/cgroup_linux.go` walks up from
+   `/proc/self/cgroup` to the deepest ancestor that is writable *and* has the
+   needed controllers enabled in `cgroup.subtree_control` (systemd delegates a
+   `user@*.service` subtree), creates a `goroot-<pid>` leaf, writes
+   `memory.max`/`memory.high`/`cpu.max`/`pids.max`, and puts the container into
+   it with `SysProcAttr.UseCgroupFD`+`CgroupFD` (`CLONE_INTO_CGROUP`). If that
+   clone flag is refused (older kernel / userns combination), it retries without
+   it and attaches the pid afterwards.
+2. **rlimits (fallback).** `setupCgroup` (sandbox.go) fills `RlimitAS` /
+   `RlimitCPU` / `RlimitNPROC` and the child applies them. `RLIMIT_AS` is set
+   *in the init process immediately before `execve`* (never at clone time — the
+   Go init maps a lot of address space and would fail to start), and in the
+   tiny-init path via `prlimit(2)` on the payload only, so PID 1 is never
+   constrained. `--cpus` (a rate) and `--memory-high` have no rlimit
+   equivalent and are skipped with a warning; `--pids` only maps to
+   `RLIMIT_NPROC` for real root (nproc is host-uid-wide and unsafe rootless).
+
+`--no-cgroup` forces the fallback. `goroot doctor` prints which path is used.
+
+
 
 A minimal Alpine minirootfs is committed under `assets/` and compiled into the
 binary with `go:embed` (see `assets.go`). When `run` is called without `-r/--root`,
@@ -210,8 +236,12 @@ Gotchas:
 
 ## Testing
 
-- `scripts/smoke.sh` is the source of truth (19 checks today). Run it before
-  considering work done: `make test`.
+- `scripts/smoke.sh` is the source of truth. Run it before considering work
+  done: `make test`. It includes a `resource limits` section that checks the
+  rlimit fallback (`--no-cgroup`, so it is host-independent), that an oversized
+  allocation is rejected, and — only when `goroot doctor` reports a delegated
+  cgroup — that `memory.max` is applied. `sandbox/cgroup_linux_test.go` unit
+  tests the controller-enabling and limit-writing logic.
 - Force degradation paths without an old kernel: `GOROOT_DISABLE_NS=pid,uts,net`
   (comma-separated namespace names) makes `probeNS` report them as unsupported.
 - `rootfs/`, the built binary and tarballs are gitignored; the smoke test fetches the

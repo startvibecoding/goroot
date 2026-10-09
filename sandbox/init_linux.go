@@ -41,6 +41,9 @@ func Init() {
 		fmt.Fprintf(os.Stderr, "goroot: %v\n", err)
 		os.Exit(127)
 	}
+	// Apply the rlimit fallback as the very last step before exec, so the Go
+	// runtime of this init process is never itself constrained.
+	applySelfRlimits(spec)
 	if err := unix.Exec(argv0, argv, env); err != nil {
 		fmt.Fprintf(os.Stderr, "goroot: exec %s: %v\n", argv0, err)
 	}
@@ -303,6 +306,9 @@ func runTinyInit(spec *Spec) int {
 		fmt.Fprintf(os.Stderr, "goroot: start %s: %v\n", argv0, err)
 		return 127
 	}
+	// Apply the rlimit fallback to the payload only (never to this long-lived
+	// PID 1), using prlimit(2) on the freshly started child.
+	applyChildRlimits(proc.Pid, spec)
 
 	sigc := make(chan os.Signal, 16)
 	signal.Notify(sigc, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP,
@@ -331,6 +337,51 @@ func runTinyInit(spec *Spec) int {
 		return 128 + int(ws.Signal())
 	}
 	return state.ExitCode()
+}
+
+// rlimitValues returns the (resource, value) pairs the fallback must apply.
+func rlimitValues(spec *Spec) []struct {
+	res  int
+	val  int64
+	name string
+} {
+	return []struct {
+		res  int
+		val  int64
+		name string
+	}{
+		{unix.RLIMIT_AS, spec.RlimitAS, "RLIMIT_AS"},
+		{unix.RLIMIT_CPU, spec.RlimitCPU, "RLIMIT_CPU"},
+		{unix.RLIMIT_NPROC, spec.RlimitNPROC, "RLIMIT_NPROC"},
+	}
+}
+
+// applySelfRlimits applies the fallback limits to the current process. It is
+// called immediately before execve, so only the target command runs under them.
+func applySelfRlimits(spec *Spec) {
+	for _, l := range rlimitValues(spec) {
+		if l.val <= 0 {
+			continue
+		}
+		lim := unix.Rlimit{Cur: uint64(l.val), Max: uint64(l.val)}
+		if err := unix.Setrlimit(l.res, &lim); err != nil {
+			warnf("setrlimit %s=%d: %v", l.name, l.val, err)
+		}
+	}
+}
+
+// applyChildRlimits sets the fallback limits on an already-started child so a
+// long-lived tiny init is not constrained by them.
+func applyChildRlimits(pid int, spec *Spec) {
+	for _, l := range rlimitValues(spec) {
+		if l.val <= 0 {
+			continue
+		}
+		lim := unix.Rlimit{Cur: uint64(l.val), Max: uint64(l.val)}
+		if err := unix.Prlimit(pid, l.res, &lim, nil); err != nil {
+			warnf("prlimit %s=%d: %v", l.name, l.val, err)
+		}
+	}
 }
 
 func buildExec(spec *Spec) (string, []string, []string, error) {

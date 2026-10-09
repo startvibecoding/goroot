@@ -67,6 +67,28 @@ check "cwd set" "/tmp" "$($BIN run -r "$ROOTFS" -w /tmp -- pwd)"
 echo "==> init mode reaps & propagates"
 check "init exit code" "7" "$($BIN run -r "$ROOTFS" --init -- /bin/sh -c 'exit 7'; echo $?)"
 
+echo "==> resource limits"
+# rlimit fallback is deterministic: RLIMIT_AS reflects --memory, RLIMIT_CPU maps
+# from --cpu-time. Force it with --no-cgroup so the result is host-independent.
+check "rlimit fallback sets RLIMIT_AS" "65536" \
+  "$($BIN run -r "$ROOTFS" --no-cgroup --memory 64m -- /bin/sh -c 'ulimit -v' 2>/dev/null)"
+check "cpu-time maps to RLIMIT_CPU" "5" \
+  "$($BIN run -r "$ROOTFS" --cpu-time 5 -- /bin/sh -c 'ulimit -t' 2>/dev/null)"
+# A large allocation must fail whether enforced by cgroup memory.max (OOM kill)
+# or by RLIMIT_AS (malloc failure) - auto-selects the mechanism.
+PROG='BEGIN{s="aaaaaaaaaa";while(length(s)<200000000)s=s s;print "alloc-ok"}'
+out=$($BIN run -r "$ROOTFS" --memory 64m -- /bin/sh -c "awk '$PROG'" 2>/dev/null)
+[ "$out" != "alloc-ok" ] && ok "memory limit enforced (allocation rejected)" || bad "memory limit not enforced"
+check "cpus flag accepted" "cpu-ok" "$($BIN run -r "$ROOTFS" --cpus 0.5 -- /bin/sh -c 'echo cpu-ok' 2>/dev/null)"
+check "pids flag accepted" "pids-ok" "$($BIN run -r "$ROOTFS" --pids 64 -- /bin/sh -c 'echo pids-ok' 2>/dev/null)"
+if $BIN doctor 2>/dev/null | grep -q 'delegated at'; then
+  got=$($BIN run -r "$ROOTFS" --memory 64m -- /bin/sh -c \
+    'd=$(sed -n "s/^0:://p" /proc/self/cgroup); cat /sys/fs/cgroup$d/memory.max' 2>/dev/null)
+  check "cgroup memory.max applied" "67108864" "$got"
+else
+  echo "  skip - cgroup not delegated (rlimit fallback in use)"
+fi
+
 echo "==> doctor & degradation"
 $BIN doctor >/dev/null 2>&1 && ok "doctor runs" || bad "doctor"
 out=$(GOROOT_DISABLE_NS=uts $BIN run -r "$ROOTFS" -- hostname 2>/dev/null)

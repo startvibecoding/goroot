@@ -63,6 +63,17 @@ func cmdDoctor(_ []string) int {
 	fmt.Printf("subuid entry    : %s\n", subidLine("/etc/subuid"))
 	fmt.Printf("subgid entry    : %s\n", subidLine("/etc/subgid"))
 
+	cg := sandbox.DetectCgroup()
+	switch {
+	case !cg.V2:
+		fmt.Println("resource limits : cgroup v2 unavailable (falling back to rlimits)")
+	case cg.Delegated:
+		fmt.Printf("resource limits : cgroup v2 delegated at %s (controllers: %s)\n",
+			cg.Path, strings.Join(cg.Controllers, " "))
+	default:
+		fmt.Println("resource limits : cgroup v2 present but not delegated (falling back to rlimits)")
+	}
+
 	fmt.Println("verdict         :")
 	switch {
 	case caps.RealRoot:
