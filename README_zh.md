@@ -16,6 +16,7 @@ uid=0(root) gid=0(root) groups=65534(nobody),0(root)
 
 ## 特性
 
+- **开箱即用**：二进制内置一个 Alpine minirootfs，不传 `--root` 时直接使用。
 - **无需 root**：靠 unprivileged user namespace 把当前用户映射成容器内的 root。
 - **真正的隔离**：user / mount / pid / uts / ipc / net 六个命名空间（可单独关闭）。
 - **单进程**：默认直接把目标命令 exec 成容器内的 PID 1，无守护进程。
@@ -48,19 +49,28 @@ make build          # 产出 ./goroot
 make install        # 安装到 /usr/local/bin
 ```
 
+内置 rootfs 位于 `assets/`（`alpine-minirootfs-3.20.0-x86_64.tar.gz`），通过
+`go:embed` 编译进二进制。要更新它，把新的 tarball 放进 `assets/` 并修改
+`assets.go` 里的常量即可。
+
 ## 快速开始
 
+二进制内置了一个精简的 Alpine rootfs，所以可以立即启动：
+
 ```sh
-# 1. 下载并解包一个 Alpine rootfs（不需要 root，文件归当前用户所有）
+./goroot run -- /bin/sh        # 使用内置 Alpine minirootfs
+```
+
+首次使用会解包到 `~/.cache/goroot/alpine-3.20.0-x86_64`，之后复用。要用自己的
+rootfs，传 `-r DIR` 即可：
+
+```sh
+# 解包一个你下载的 rootfs（不需要 root，文件归当前用户所有）
 ./goroot extract \
   https://dl-cdn.alpinelinux.org/alpine/v3.21/releases/x86_64/alpine-minirootfs-3.21.3-x86_64.tar.gz \
   rootfs
 
-# 2. 启动交互式 shell
 ./goroot run -r rootfs -- /bin/sh
-
-# 3. 一次性命令
-./goroot run -r rootfs -- /bin/sh -c 'cat /etc/os-release; id'
 ```
 
 ### 在容器里联网装包
@@ -86,7 +96,7 @@ goroot version
 
 | 选项 | 说明 |
 | --- | --- |
-| `-r, --root DIR` | rootfs 目录（默认 `./rootfs`） |
+| `-r, --root DIR` | rootfs 目录（默认：内置 Alpine minirootfs） |
 | `--hostname NAME` | 容器主机名（默认 `goroot`） |
 | `-b, --bind SRC[:DST][,ro]` | 绑定挂载主机路径（可重复） |
 | `--ro-bind SRC[:DST]` | 只读绑定挂载（可重复） |
@@ -202,3 +212,4 @@ ROOTFS=./myrootfs ./scripts/smoke.sh   # 复用已有 rootfs
 | `init_linux.go` | 子进程侧：挂载、pivot_root、exec、微型 init |
 | `net_linux.go` | 拉起 lo、终端检测 |
 | `extract.go` | tar 解包（本地/URL） |
+| `assets.go` | 内置默认 rootfs（`assets/*.tar.gz`）、缓存解包 |

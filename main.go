@@ -52,7 +52,7 @@ Usage:
   goroot version
 
 run options:
-  -r, --root DIR        rootfs directory (default: ./rootfs)
+  -r, --root DIR        rootfs directory (default: built-in Alpine minirootfs)
       --hostname NAME   container hostname (default: goroot)
   -b, --bind SRC[:DST][,ro]   bind mount host path into the container (repeatable)
       --ro-bind SRC[:DST]     read-only bind mount (repeatable)
@@ -69,9 +69,9 @@ run options:
   -h, --help            show this help
 
 Examples:
-  goroot extract alpine-3.20.tar.gz rootfs
-  goroot run -r rootfs -- /bin/sh
-  goroot run -r rootfs -b /etc/resolv.conf:ro -- /bin/sh -c 'apk add curl'
+  goroot run -- /bin/sh                     # use the built-in Alpine rootfs
+  goroot run -r myrootfs -- /bin/sh          # use your own rootfs
+  goroot extract alpine-3.20.tar.gz rootfs   # unpack a custom rootfs
 
 Notes:
   * Files in the rootfs should be owned by your host user (extract as
@@ -85,7 +85,7 @@ Notes:
 
 func cmdRun(args []string) int {
 	spec := &Spec{
-		Rootfs:   "./rootfs",
+		Rootfs:   "", // empty => use the built-in Alpine rootfs
 		Hostname: "goroot",
 		Cwd:      "/",
 	}

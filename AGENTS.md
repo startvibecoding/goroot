@@ -50,6 +50,7 @@ child via the **`GOROOT_SPEC`** environment variable. Namespaces are created by
 | `init_linux.go` | child: mounts, `pivot_root`, exec, tiny init (`--init`) |
 | `net_linux.go` | bring up `lo`, `isTerminal` |
 | `extract.go` | tar/.gz/.bz2 unpacking (local file or http(s) URL) |
+| `assets.go` | embedded default rootfs (`assets/*.tar.gz`) + cache extraction |
 
 ## Critical invariants — do not break these
 
@@ -94,6 +95,21 @@ These were each a real bug. Read before touching namespaces/mounts.
    (`NoUser=true`) and can use any uid.
 
 7. **Exit codes must propagate**: signal death → `128 + signum`.
+
+## Built-in default rootfs
+
+A minimal Alpine minirootfs is committed under `assets/` and compiled into the
+binary with `go:embed` (see `assets.go`). When `run` is called without `-r/--root`,
+`ensureEmbeddedRootfs` extracts it (atomically, race-safe) to
+`$XDG_CACHE_HOME/goroot/alpine-<ver>` on first use and reuses it afterwards.
+
+- The tarball is **intentionally tracked**; `.gitignore` ignores `*.tar.gz` but
+  re-includes `!assets/*.tar.gz`.
+- To bump the embedded version: drop a new tarball in `assets/`, update the
+  `embeddedTarball` / `embeddedRootDir` constants and the `go:embed` path in
+  `assets.go`, and commit the tarball.
+- Keep the binary buildable offline: never make the build depend on downloading the
+  rootfs.
 
 ## Conventions
 

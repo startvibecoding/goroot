@@ -24,6 +24,8 @@ echo "==> identity"
 check "uid is 0 inside" "0" "$($BIN run -r "$ROOTFS" -- /bin/sh -c 'id -u')"
 check "exit code propagates" "42" "$($BIN run -r "$ROOTFS" -- /bin/sh -c 'exit 42'; echo $?)"
 
+check "built-in rootfs runs (no -r)" "embedded-ok" "$($BIN run -- /bin/sh -c 'echo embedded-ok' 2>/dev/null)"
+
 echo "==> pid namespace"
 check "target is pid 1" "1" "$($BIN run -r "$ROOTFS" -- /bin/sh -c 'echo $$')"
 npids=$($BIN run -r "$ROOTFS" -- /bin/sh -c 'ls /proc | grep -cE "^[0-9]+$"')

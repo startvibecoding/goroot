@@ -18,6 +18,8 @@ uid=0(root) gid=0(root) groups=65534(nobody),0(root)
 
 ## Features
 
+- **Works out of the box** — an Alpine minirootfs is embedded in the binary and
+  used when no `--root` is given.
 - **No root required** — an unprivileged user namespace maps your user to root
   inside the container.
 - **Real isolation** — user / mount / pid / uts / ipc / net namespaces (each can be
@@ -62,19 +64,28 @@ make build          # produces ./goroot
 make install        # installs to /usr/local/bin
 ```
 
+The built-in rootfs lives in `assets/` (`alpine-minirootfs-3.20.0-x86_64.tar.gz`)
+and is compiled into the binary with `go:embed`. To refresh it, drop a new tarball
+in `assets/` and update the constants in `assets.go`.
+
 ## Quick start
 
+A minimal Alpine rootfs is embedded in the binary, so you can start immediately:
+
 ```sh
-# 1. Download and unpack an Alpine rootfs (no root; files end up owned by you)
+./goroot run -- /bin/sh        # uses the built-in Alpine minirootfs
+```
+
+On first use it is unpacked to `~/.cache/goroot/alpine-3.20.0-x86_64` and reused
+from then on. To use your own rootfs instead, pass `-r DIR`:
+
+```sh
+# unpack a rootfs you downloaded (no root; files end up owned by you)
 ./goroot extract \
   https://dl-cdn.alpinelinux.org/alpine/v3.21/releases/x86_64/alpine-minirootfs-3.21.3-x86_64.tar.gz \
   rootfs
 
-# 2. Start an interactive shell
 ./goroot run -r rootfs -- /bin/sh
-
-# 3. Run a one-off command
-./goroot run -r rootfs -- /bin/sh -c 'cat /etc/os-release; id'
 ```
 
 ### Networking inside the container
@@ -101,7 +112,7 @@ goroot version
 
 | Option | Description |
 | --- | --- |
-| `-r, --root DIR` | rootfs directory (default `./rootfs`) |
+| `-r, --root DIR` | rootfs directory (default: built-in Alpine minirootfs) |
 | `--hostname NAME` | container hostname (default `goroot`) |
 | `-b, --bind SRC[:DST][,ro]` | bind-mount a host path (repeatable) |
 | `--ro-bind SRC[:DST]` | read-only bind mount (repeatable) |
@@ -230,3 +241,4 @@ Code layout:
 | `init_linux.go` | child side: mounts, pivot_root, exec, tiny init |
 | `net_linux.go` | bring up `lo`, terminal detection |
 | `extract.go` | tar unpacking (local/URL) |
+| `assets.go` | embedded default rootfs (`assets/*.tar.gz`), cache extraction |

@@ -5,3 +5,5 @@
 *.tar.gz
 *.tar.xz
 *.tgz
+# ...but the embedded default rootfs asset is part of the repo
+!assets/*.tar.gz

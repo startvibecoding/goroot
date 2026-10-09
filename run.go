@@ -16,6 +16,16 @@ import (
 // kernel/environment can actually provide, degrades gracefully, then
 // re-executes itself as the hidden "__init" stage inside them.
 func runParent(spec *Spec) int {
+	// No -r/--root: fall back to the Alpine minirootfs embedded in the binary.
+	if spec.Rootfs == "" {
+		dir, err := ensureEmbeddedRootfs()
+		if err != nil {
+			fatal("prepare built-in rootfs: %v", err)
+		}
+		info("using built-in Alpine minirootfs (cache: %s)", dir)
+		spec.Rootfs = dir
+	}
+
 	abs, err := filepath.Abs(spec.Rootfs)
 	if err != nil {
 		fatal("resolve rootfs: %v", err)
@@ -160,4 +170,8 @@ func runParent(spec *Spec) int {
 
 func warn(format string, a ...any) {
 	fmt.Fprintf(os.Stderr, "goroot: warning: "+format+"\n", a...)
+}
+
+func info(format string, a ...any) {
+	fmt.Fprintf(os.Stderr, "goroot: "+format+"\n", a...)
 }
