@@ -104,6 +104,9 @@ These were each a real bug. Read before touching namespaces/mounts.
   to stderr prefixed with `goroot: warning:`.
 - Linux-only files carry `//go:build linux`.
 - Keep `gofmt` and `go vet` clean; the repo has no separate linter.
+- Docs are bilingual: `README.md` is the **English** default, `README_zh.md` is the
+  Chinese version. Keep them in sync and preserve the language-switcher line
+  under the title (`[English](README.md) | [中文](README_zh.md)`).
 
 ## Testing
 
