@@ -9,7 +9,8 @@ import (
 	"github.com/startvibecoding/goroot/sandbox"
 )
 
-const version = "0.1.0"
+// version is injected at build time via -ldflags "-X main.version=...".
+var version = "0.1.0"
 
 func main() {
 	// Init must run before anything else: when this process is the container

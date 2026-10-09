@@ -328,6 +328,25 @@ make test           # smoke test (prepares an alpine rootfs; needs network)
 ROOTFS=./myrootfs ./scripts/smoke.sh   # reuse an existing rootfs
 ```
 
+### CI & releasing
+
+`.github/workflows/ci.yml` builds and runs the smoke test on every push and pull
+request.
+
+`.github/workflows/release.yml` triggers on **`v*` tags**: it cross-compiles
+Linux binaries, creates the GitHub Release and publishes the npm package.
+
+```sh
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+Artifacts (also buildable locally with `make dist`):
+`goroot_<ver>_linux_{amd64,arm64}.tar.gz`, matching raw binaries (downloaded by
+the npm package on install) and `checksums.txt`.
+
+npm publishing uses the repository secret `NPM_TOKEN` (an npm automation token);
+if it is not set the release still runs and the npm job is skipped with a warning.
+
 Code layout:
 
 Three packages: the root `github.com/startvibecoding/goroot` (CLI + daemon),

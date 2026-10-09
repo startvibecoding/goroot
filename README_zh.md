@@ -288,6 +288,23 @@ make test           # 冒烟测试（自动准备 alpine rootfs，需能联网�
 ROOTFS=./myrootfs ./scripts/smoke.sh   # 复用已有 rootfs
 ```
 
+### CI 与发布
+
+`.github/workflows/ci.yml` 在每次推送和 PR 时构建并运行冒烟测试。
+
+`.github/workflows/release.yml` 由 **`v*` tag** 触发：交叉编译 Linux 二进制、创建
+GitHub Release 并发布 npm 包。
+
+```sh
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+产物（本地也可用 `make dist` 构建）：`goroot_<ver>_linux_{amd64,arm64}.tar.gz`、
+对应的裸二进制（npm 安装时下载）以及 `checksums.txt`。
+
+npm 发布使用仓库密钥 `NPM_TOKEN`（npm automation token）；未配置时 release 照常运行，
+npm 步骤会跳过并给出警告。
+
 代码结构：
 
 代码结构：三个包——根包 `github.com/startvibecoding/goroot`（CLI + 守护进程）、

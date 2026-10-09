@@ -1,0 +1,41 @@
+{
+  "name": "goroot",
+  "version": "0.0.0",
+  "description": "Rootless, lightweight container sandbox in Go (user-namespace based)",
+  "keywords": [
+    "container",
+    "sandbox",
+    "rootless",
+    "namespace",
+    "proot",
+    "linux",
+    "cli"
+  ],
+  "homepage": "https://github.com/startvibecoding/goroot",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/startvibecoding/goroot.git"
+  },
+  "license": "MIT",
+  "bin": {
+    "goroot": "bin/goroot.js"
+  },
+  "scripts": {
+    "postinstall": "node scripts/postinstall.js"
+  },
+  "files": [
+    "bin/",
+    "scripts/",
+    "README.md"
+  ],
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "x64",
+    "arm64"
+  ],
+  "engines": {
+    "node": ">=16"
+  }
+}

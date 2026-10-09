@@ -1,5 +1,6 @@
 # build artifacts
 /goroot
+/dist/
 # test/rootfs data
 /rootfs/
 *.tar.gz
@@ -7,3 +8,5 @@
 *.tgz
 # ...but the embedded default rootfs asset is part of the repo
 !assets/*.tar.gz
+# npm package installs the binary here
+npm/goroot/vendor/

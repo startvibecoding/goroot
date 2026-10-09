@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - "**"
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    name: Build & test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # GitHub's Ubuntu 24.04 runners restrict unprivileged user namespaces via
+      # AppArmor by default. goroot needs them, so relax the restriction
+      # (runners have passwordless sudo).
+      - name: Enable unprivileged user namespaces
+        run: |
+          sudo sysctl -w kernel.unprivileged_userns_clone=1 || true
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+
+      - name: go vet
+        run: make vet
+
+      - name: Build
+        run: make build
+
+      - name: Doctor
+        run: ./goroot doctor
+
+      - name: Smoke test
+        run: ./scripts/smoke.sh

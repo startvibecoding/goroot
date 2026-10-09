@@ -212,6 +212,26 @@ Gotchas:
 - `rootfs/`, the built binary and tarballs are gitignored; the smoke test fetches the
   Alpine minirootfs on demand (needs network).
 
+## CI, releases & npm
+
+- `.github/workflows/ci.yml` — runs on every push (all branches) and PRs:
+  `make vet`, `make build`, `./goroot doctor`, then `./scripts/smoke.sh`. It first
+  relaxes the runner's userns restriction (`sysctl
+  kernel.apparmor_restrict_unprivileged_userns=0`), because Ubuntu 24.04 runners
+  block unprivileged user namespaces by default.
+- `.github/workflows/release.yml` — triggers on `v*` tags (and manual dispatch):
+  builds `dist/` via `make dist` → `scripts/build-release.sh`, uploads artifacts,
+  creates a GitHub Release (`softprops/action-gh-release`), then publishes npm.
+- `scripts/build-release.sh` cross-compiles `linux/{amd64,arm64}` with
+  `-X main.version=<tag>` (so `version` in `main.go` must stay a `var`), emits
+  `goroot_<ver>_linux_<arch>` raw binaries + `.tar.gz` + `checksums.txt`.
+- `npm/goroot/` is the published package. `postinstall.js` downloads the matching
+  raw binary from the release into `vendor/goroot`; `bin/goroot.js` execs it. The
+  release job sets the version from the tag before `npm publish`. Publishing needs
+  the `NPM_TOKEN` secret; the step no-ops with a warning when it is absent.
+- Bump the version by tagging (`git tag v0.1.0 && git push origin v0.1.0`); it is
+  injected at build time, do not hand-edit `main.go`'s `version` for releases.
+
 ## Environment notes
 
 - Requires unprivileged user namespaces: `kernel.unprivileged_userns_clone = 1`.
