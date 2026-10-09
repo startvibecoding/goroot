@@ -26,34 +26,70 @@ behavior.** It returns non-zero on any failure.
 
 ## Architecture: two-stage re-exec
 
-One binary dispatches on `os.Args[1]` in `main.go`:
+The container init is a **re-exec of the binary itself** (for the SDK, the
+importing binary), selected by an environment marker, not by a subcommand:
 
-| arg | role |
+| marker | stage |
 | --- | --- |
-| `run` | **parent** stage: probe capabilities, open namespaces, re-exec self as `__init` |
-| `__init` | **child** stage: runs *inside* the namespaces; sets up mounts, `pivot_root`, execs the target |
-| `__probeok` | hidden trivial child used to test whether a namespace can be created |
-| `extract` / `pull` | unpack a (possibly compressed) tar rootfs, discarding ownership |
-| `doctor` / `check` | capability report |
+| `GOROOT_INIT=1` | **child**: runs *inside* the namespaces; sets up mounts, `pivot_root`, execs the target |
+| `GOROOT_PROBE=1` | trivial child used to test whether a namespace can be created |
 
-The parent builds a `Spec` (`spec.go`), serialises it to JSON and passes it to the
-child via the **`GOROOT_SPEC`** environment variable. Namespaces are created by
-`os/exec` + `syscall.SysProcAttr.Cloneflags`; uid/gid mapping is set via
+The parent (`sandbox.Start`) builds a `Spec` (`sandbox/spec.go`), serialises it to
+JSON and passes it via **`GOROOT_SPEC`**. `sandbox.Init()` (called first thing in
+`main`) checks the markers and runs the child stage. Namespaces are created by
+`os/exec` + `syscall.SysProcAttr.Cloneflags`; uid/gid mapping via
 `UidMappings`/`GidMappings`.
+
+Top-level CLI subcommands (`main.go`): `run`, `extract`/`pull`, `doctor`/`check`,
+`server`/`daemon`, `client`, `version`, `help`.
+
+## Layout
+
+Three packages:
+
+- **`goroot`** (root, `package main`) — the CLI + daemon.
+- **`goroot/sandbox`** — the reusable container engine (also the Go SDK).
+- **`goroot/assets`** — the embedded default rootfs (opt-in; ~3.5 MB).
 
 | file | responsibility |
 | --- | --- |
-| `main.go` | CLI parsing / command dispatch |
-| `spec.go` | `Spec` struct (JSON to child), add fields here for new options |
-| `run.go` | parent: capability probing, degradation, clone flags, uid maps, tty, exit code |
-| `probe_linux.go` | `probeNS`, `doctor`, `GOROOT_DISABLE_NS` test hook |
-| `init_linux.go` | child: mounts, `pivot_root`, exec, tiny init (`--init`) |
-| `net_linux.go` | bring up `lo`, `isTerminal` |
-| `extract.go` | tar/.gz/.bz2 unpacking (local file or http(s) URL) |
-| `assets.go` | embedded default rootfs (`assets/*.tar.gz`) + cache extraction |
-| `protocol.go` | daemon wire protocol (op run/ps/logs/stop/rm/status/shutdown) + `~/.goroot` paths |
+| `main.go` | CLI parsing / dispatch; calls `sandbox.Init()` first; `buildRunSpec` |
+| `run.go` | foreground `run`: wires stdio + signal-derived context into `sandbox.Run` |
+| `doctor.go` | `doctor` command (uses `sandbox.Detect`) |
+| `extract.go` | `extract` command (URL/local fetch) + `sandbox.Extract` |
+| `assets.go` | resolve built-in rootfs from `assets` pkg into `~/.cache/goroot` |
+| `protocol.go` | daemon wire protocol + `~/.goroot` paths |
 | `daemon.go` | `server`: task manager, unix-socket listener, log streaming |
-| `client.go` | `client` subcommands (run/ps/logs/stop/rm/status/shutdown) |
+| `client.go` | `client` subcommands |
+| `sandbox/spec.go` | exported `Spec`, `Bind`, `Stdio`, JSON to child |
+| `sandbox/sandbox.go` | parent side: `Start`/`Run`/`Wait`/`Signal`/`Kill`, degrade, clone flags |
+| `sandbox/init_linux.go` | child side: `Init` (re-exec entry), mounts, `pivot_root`, exec, tiny init |
+| `sandbox/probe_linux.go` | `probeNS`, `Detect` (`Caps`), `GOROOT_DISABLE_NS` hook |
+| `sandbox/net_linux.go` | bring up `lo`, `isTerminal` |
+| `sandbox/extract.go` | `Extract` tar/.gz/.bz2 unpacking |
+| `assets/assets.go` | `go:embed` of the Alpine tarball |
+
+## Go SDK (`goroot/sandbox`)
+
+The `sandbox` package is the public SDK: other programs import it to run
+sandboxes. API: `Spec`, `Stdio`, `Start`, `Run`, `Wait`, `Signal`, `Kill`,
+`Pid`, `Extract`, `Detect`, and `Init`.
+
+- **`sandbox.Init()` MUST be the first statement of the importing program's
+  `main`.** The child stage is a re-exec of *the importing binary* with
+  `GOROOT_INIT=1` (init) or `GOROOT_PROBE=1` (capability probe). `Init` inspects
+  those env vars and either runs the container init (never returning) or returns
+  immediately. See `examples/sdk`.
+- The re-exec target is `os.Executable()`. Package-level `init()` funcs of the
+  host program therefore run in the child too — keep them side-effect free.
+- The SDK never depends on the embedded rootfs; import `goroot/assets` only if you
+  want it.
+- `Stdio` takes any `io.Reader`/`io.Writer` (nil = empty stdin / discarded out).
+  TTY is auto-detected for terminal `*os.File`s.
+- The module path is currently `goroot` (fine for local/vendored use). Before
+  publishing, set a resolvable path (`go mod edit -module github.com/you/goroot`)
+  so external programs can `go get` it.
+
 
 ## Critical invariants — do not break these
 

@@ -5,11 +5,18 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	"goroot/sandbox"
 )
 
 const version = "0.1.0"
 
 func main() {
+	// Init must run before anything else: when this process is the container
+	// init (or a capability probe) re-executed by the sandbox package, Init
+	// never returns. Otherwise it returns immediately.
+	sandbox.Init()
+
 	args := os.Args[1:]
 	if len(args) == 0 {
 		usage()
@@ -17,12 +24,6 @@ func main() {
 	}
 
 	switch args[0] {
-	case "__init":
-		// Hidden stage executed inside the new namespaces.
-		os.Exit(initMain())
-	case "__probeok":
-		// Hidden stage: proves a namespace setup succeeded.
-		os.Exit(probeOK(args[1:]))
 	case "run":
 		os.Exit(cmdRun(args[1:]))
 	case "extract", "pull":
@@ -88,23 +89,29 @@ Notes:
     (kernel.unprivileged_userns_clone=1); namespaces that a given kernel
     cannot provide are dropped automatically with a warning. Run
     'goroot doctor' to see exactly what is supported here.
+  * A Go SDK for embedding sandboxes is available as the 'goroot/sandbox'
+    package (call sandbox.Init() first in your main).
 `)
 }
 
 func cmdRun(args []string) int {
-	return runParent(buildRunSpec(args))
+	spec := buildRunSpec(args)
+	if err := resolveRootfs(spec); err != nil {
+		fatal("%v", err)
+	}
+	return runSpec(spec)
 }
 
 // buildRunSpec parses the options shared by `goroot run` and `goroot client run`.
-func buildRunSpec(args []string) *Spec {
-	spec := &Spec{
+func buildRunSpec(args []string) *sandbox.Spec {
+	spec := &sandbox.Spec{
 		Rootfs:   "", // empty => use the built-in Alpine rootfs
 		Hostname: "goroot",
 		Cwd:      "/",
 		ShareNet: true, // share the host network by default
 	}
 
-	binds := []Bind{}
+	binds := []sandbox.Bind{}
 	var cmdArgs []string
 
 	i := 0
@@ -119,7 +126,6 @@ func buildRunSpec(args []string) *Spec {
 			break
 		}
 
-		// split "--flag=value"
 		val := ""
 		hasVal := false
 		if eq := strings.IndexByte(a, '='); eq >= 0 {
@@ -185,9 +191,8 @@ func buildRunSpec(args []string) *Spec {
 	return spec
 }
 
-func parseBind(s string, forceRO bool) Bind {
+func parseBind(s string, forceRO bool) sandbox.Bind {
 	ro := forceRO
-	// Comma-separated options: SRC[:DST][,ro]
 	parts := strings.Split(s, ",")
 	specPart := parts[0]
 	for _, o := range parts[1:] {
@@ -196,7 +201,6 @@ func parseBind(s string, forceRO bool) Bind {
 		}
 	}
 
-	// Trailing option syntax: SRC[:DST][:ro|:rw]
 	fields := strings.Split(specPart, ":")
 	if n := len(fields); n >= 2 {
 		switch fields[n-1] {
@@ -208,12 +212,12 @@ func parseBind(s string, forceRO bool) Bind {
 		}
 	}
 
-	var src, dst string
-	src = fields[0]
+	src := fields[0]
+	dst := ""
 	if len(fields) > 1 {
 		dst = strings.Join(fields[1:], ":")
 	}
-	return Bind{Src: src, Dst: dst, RO: ro}
+	return sandbox.Bind{Src: src, Dst: dst, RO: ro}
 }
 
 func atoiOr(s, flag string) int {
@@ -227,4 +231,19 @@ func atoiOr(s, flag string) int {
 func fatal(format string, a ...any) {
 	fmt.Fprintf(os.Stderr, "goroot: "+format+"\n", a...)
 	os.Exit(1)
+}
+
+func info(format string, a ...any) {
+	fmt.Fprintf(os.Stderr, "goroot: "+format+"\n", a...)
+}
+
+// selfPath returns the path to re-exec for the daemon child.
+func selfPath() string {
+	if _, err := os.Stat("/proc/self/exe"); err == nil {
+		return "/proc/self/exe"
+	}
+	if exe, err := os.Executable(); err == nil {
+		return exe
+	}
+	return "goroot"
 }

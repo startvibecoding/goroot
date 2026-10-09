@@ -1,6 +1,6 @@
 //go:build linux
 
-package main
+package sandbox
 
 import (
 	"fmt"
@@ -15,80 +15,36 @@ import (
 
 const oldRootName = ".goroot_oldroot"
 
-// initMain runs inside the freshly created namespaces. It sets up the
-// root filesystem, pivots into it and finally execs the target command.
-func initMain() int {
+// Init must be called as the first statement of the importing program's main.
+// It detects whether this process is the container init (or a capability probe)
+// re-exec of ourselves; if so it never returns. Otherwise it returns
+// immediately and the caller's main proceeds normally.
+func Init() {
+	if os.Getenv("GOROOT_PROBE") != "" {
+		os.Exit(0)
+	}
+	if os.Getenv("GOROOT_INIT") == "" {
+		return
+	}
+
 	spec := loadSpecFromEnv()
 	if err := setupContainer(spec); err != nil {
 		fmt.Fprintf(os.Stderr, "goroot: %v\n", err)
-		return 125
+		os.Exit(125)
 	}
 	if spec.UseInit {
-		return runTinyInit(spec)
+		os.Exit(runTinyInit(spec))
 	}
-	// Everything is in place: replace ourselves with the target process.
+
 	argv0, argv, env, err := buildExec(spec)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "goroot: %v\n", err)
-		return 127
+		os.Exit(127)
 	}
 	if err := unix.Exec(argv0, argv, env); err != nil {
 		fmt.Fprintf(os.Stderr, "goroot: exec %s: %v\n", argv0, err)
-		return 127
 	}
-	return 0
-}
-
-// runTinyInit keeps this process as PID 1 inside the namespace and runs the
-// target as its child. PID 1 reaps orphaned processes and forwards signals,
-// which makes running long-lived services more robust.
-func runTinyInit(spec *Spec) int {
-	argv0, argv, env, err := buildExec(spec)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "goroot: %v\n", err)
-		return 127
-	}
-	attr := &os.ProcAttr{
-		Dir:   spec.Cwd,
-		Env:   env,
-		Files: []*os.File{os.Stdin, os.Stdout, os.Stderr},
-	}
-	proc, err := os.StartProcess(argv0, argv, attr)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "goroot: start %s: %v\n", argv0, err)
-		return 127
-	}
-
-	sigc := make(chan os.Signal, 16)
-	signal.Notify(sigc, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP,
-		syscall.SIGQUIT, syscall.SIGUSR1, syscall.SIGUSR2,
-		syscall.SIGWINCH, syscall.SIGCONT)
-	go func() {
-		for s := range sigc {
-			_ = proc.Signal(s)
-		}
-	}()
-
-	state, err := proc.Wait()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "goroot: wait: %v\n", err)
-		return 127
-	}
-
-	signal.Stop(sigc)
-	// Reap any orphaned grandchildren that got reparented to PID 1.
-	for {
-		var ws syscall.WaitStatus
-		pid, _ := syscall.Wait4(-1, &ws, syscall.WNOHANG, nil)
-		if pid <= 0 {
-			break
-		}
-	}
-
-	if ws, ok := state.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
-		return 128 + int(ws.Signal())
-	}
-	return state.ExitCode()
+	os.Exit(127)
 }
 
 func setupContainer(spec *Spec) error {
@@ -100,44 +56,39 @@ func setupContainer(spec *Spec) error {
 
 	root := spec.Rootfs
 
-	// 1. Bind the rootfs onto itself so that pivot_root has a mount
-	// point to work with. This must happen BEFORE we add submounts.
+	// 1. Bind the rootfs onto itself so that pivot_root has a mount point to
+	// work with. This must happen BEFORE we add submounts.
 	if err := unix.Mount(root, root, "", unix.MS_BIND, ""); err != nil {
 		return fmt.Errorf("bind rootfs onto itself: %w", err)
 	}
 
 	// 2. Prepare the standard directory tree inside the rootfs.
-	for _, d := range []string{
-		"/proc", "/sys", "/dev", "/tmp", "/run",
-	} {
+	for _, d := range []string{"/proc", "/sys", "/dev", "/tmp", "/run"} {
 		_ = os.MkdirAll(filepath.Join(root, d), 0o755)
 	}
 
-	// 3. /proc. Mounting a fresh procfs is only permitted when we own a
-	// PID namespace; otherwise fall back to a bind of the host's /proc.
+	// 3. /proc. Mounting a fresh procfs is only permitted when we own a PID
+	// namespace; otherwise fall back to a bind of the host's /proc.
 	procDst := filepath.Join(root, "proc")
 	if spec.NoPID {
 		if err := unix.Mount("/proc", procDst, "", unix.MS_BIND|unix.MS_REC, ""); err != nil {
 			return fmt.Errorf("bind /proc: %w", err)
 		}
 	} else if err := unix.Mount("proc", procDst, "proc", unix.MS_NOSUID|unix.MS_NODEV|unix.MS_NOEXEC, ""); err != nil {
-		// Some older kernels refuse a fresh procfs in a userns; degrade.
 		if berr := unix.Mount("/proc", procDst, "", unix.MS_BIND|unix.MS_REC, ""); berr != nil {
 			return fmt.Errorf("mount /proc: %v (bind fallback: %v)", err, berr)
 		}
-		warn("falling back to a bind of the host /proc")
+		warnf("falling back to a bind of the host /proc")
 	}
 
-	// 4. /sys: a fresh sysfs is mountable because we own a private
-	// network namespace; fall back to a read-only bind of the host's.
+	// 4. /sys: a fresh sysfs is mountable because we own a private network
+	// namespace; fall back to a read-only bind of the host's.
 	if err := unix.Mount("sysfs", filepath.Join(root, "sys"), "sysfs", unix.MS_RDONLY|unix.MS_NOSUID|unix.MS_NODEV|unix.MS_NOEXEC, ""); err != nil {
 		sysDst := filepath.Join(root, "sys")
 		if berr := unix.Mount("/sys", sysDst, "", unix.MS_BIND|unix.MS_REC, ""); berr == nil {
 			_ = unix.Mount("", sysDst, "", unix.MS_BIND|unix.MS_REMOUNT|unix.MS_RDONLY|unix.MS_REC, "")
 		} else {
-			// sysfs is tied to the network namespace: when sharing the
-			// host netns it simply cannot be exposed. Warn and continue.
-			fmt.Fprintln(os.Stderr, "goroot: warning: /sys unavailable (drop --share-net for a private netns)")
+			warnf("/sys unavailable (share-net? underlying sysfs belongs to the host netns)")
 		}
 	}
 
@@ -196,8 +147,6 @@ func setupContainer(spec *Spec) error {
 	}
 
 	// 13. Drop to the requested uid/gid (still inside the userns).
-	// In a single-id user namespace only uid/gid 0 is mapped; as real
-	// root (no userns) any id is available.
 	if spec.GID != 0 || spec.UID != 0 {
 		hint := ""
 		if !spec.NoUser {
@@ -210,7 +159,6 @@ func setupContainer(spec *Spec) error {
 			return fmt.Errorf("setuid %d: %w%s", spec.UID, err, hint)
 		}
 	}
-
 	return nil
 }
 
@@ -236,8 +184,7 @@ func setupDev(root string) error {
 		if _, err := os.Stat(src); err != nil {
 			continue
 		}
-		f, err := os.OpenFile(dst, os.O_CREATE, 0o666)
-		if err == nil {
+		if f, err := os.OpenFile(dst, os.O_CREATE, 0o666); err == nil {
 			f.Close()
 		}
 		if err := unix.Mount(src, dst, "", unix.MS_BIND, ""); err != nil {
@@ -248,11 +195,9 @@ func setupDev(root string) error {
 	// A dedicated devpts instance for the container's pseudoterminals.
 	pts := filepath.Join(dev, "pts")
 	if err := unix.Mount("devpts", pts, "devpts", 0, "newinstance,mode=0620,ptmxmode=0666"); err != nil {
-		// Fall back to the host's devpts.
 		_ = unix.Mount("/dev/pts", pts, "", unix.MS_BIND, "")
 	}
 
-	// Handy symlinks expected by many programs.
 	links := map[string]string{
 		"fd":     "/proc/self/fd",
 		"stdin":  "/proc/self/fd/0",
@@ -276,7 +221,6 @@ func applyBind(root string, b Bind) error {
 	}
 	target := filepath.Join(root, strings.TrimPrefix(dst, "/"))
 
-	// Create the mount point matching the source type.
 	if st, err := os.Stat(src); err == nil {
 		if st.IsDir() {
 			if err := os.MkdirAll(target, 0o755); err != nil {
@@ -286,15 +230,13 @@ func applyBind(root string, b Bind) error {
 			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 				return err
 			}
-			f, err := os.OpenFile(target, os.O_CREATE, 0o644)
-			if err == nil {
+			if f, err := os.OpenFile(target, os.O_CREATE, 0o644); err == nil {
 				f.Close()
 			}
 		}
 	}
 
-	flags := uintptr(unix.MS_BIND | unix.MS_REC)
-	if err := unix.Mount(src, target, "", flags, ""); err != nil {
+	if err := unix.Mount(src, target, "", unix.MS_BIND|unix.MS_REC, ""); err != nil {
 		return fmt.Errorf("bind %s -> %s: %w", src, dst, err)
 	}
 	if b.RO {
@@ -311,7 +253,6 @@ func pivotRoot(root string) error {
 		return fmt.Errorf("create oldroot: %w", err)
 	}
 	if err := unix.PivotRoot(root, oldRoot); err != nil {
-		// pivot_root can fail on exotic setups; fall back to chroot.
 		if cerr := unix.Chroot(root); cerr != nil {
 			return fmt.Errorf("pivot_root: %v (chroot fallback: %v)", err, cerr)
 		}
@@ -325,8 +266,54 @@ func pivotRoot(root string) error {
 	return nil
 }
 
-// buildExec resolves argv[0] against the container PATH and assembles the
-// final argv/env for the target process.
+// runTinyInit keeps this process as PID 1 and runs the target as its child,
+// reaping orphans and forwarding signals.
+func runTinyInit(spec *Spec) int {
+	argv0, argv, env, err := buildExec(spec)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "goroot: %v\n", err)
+		return 127
+	}
+	attr := &os.ProcAttr{
+		Dir:   spec.Cwd,
+		Env:   env,
+		Files: []*os.File{os.Stdin, os.Stdout, os.Stderr},
+	}
+	proc, err := os.StartProcess(argv0, argv, attr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "goroot: start %s: %v\n", argv0, err)
+		return 127
+	}
+
+	sigc := make(chan os.Signal, 16)
+	signal.Notify(sigc, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP,
+		syscall.SIGQUIT, syscall.SIGUSR1, syscall.SIGUSR2,
+		syscall.SIGWINCH, syscall.SIGCONT)
+	go func() {
+		for s := range sigc {
+			_ = proc.Signal(s)
+		}
+	}()
+
+	state, err := proc.Wait()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "goroot: wait: %v\n", err)
+		return 127
+	}
+	signal.Stop(sigc)
+	for {
+		var ws syscall.WaitStatus
+		pid, _ := syscall.Wait4(-1, &ws, syscall.WNOHANG, nil)
+		if pid <= 0 {
+			break
+		}
+	}
+	if ws, ok := state.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
+		return 128 + int(ws.Signal())
+	}
+	return state.ExitCode()
+}
+
 func buildExec(spec *Spec) (string, []string, []string, error) {
 	if len(spec.Argv) == 0 {
 		spec.Argv = []string{pickDefaultShell()}
@@ -352,8 +339,6 @@ func buildExec(spec *Spec) (string, []string, []string, error) {
 	return argv0, spec.Argv, env, nil
 }
 
-// shellCandidates lists the shells we look for, in priority order, as a default
-// command when the user does not specify one.
 var shellCandidates = []string{
 	"/bin/sh", "/usr/bin/sh",
 	"/bin/bash", "/usr/bin/bash",
@@ -361,8 +346,6 @@ var shellCandidates = []string{
 	"/bin/fish", "/usr/bin/fish",
 }
 
-// pickDefaultShell returns the first available shell inside the container
-// (this runs after pivot_root, so the paths are the container's).
 func pickDefaultShell() string {
 	for _, sh := range shellCandidates {
 		if st, err := os.Stat(sh); err == nil && !st.IsDir() && st.Mode()&0o111 != 0 {
@@ -396,7 +379,6 @@ func buildEnv(spec *Spec) []string {
 		"TERM="+firstNonEmpty(os.Getenv("TERM"), "xterm"),
 		"GOROOT_CONTAINER=1",
 	)
-	// Spec env overrides/extends.
 	env = append(env, spec.Env...)
 	return dedupEnv(env)
 }
@@ -426,4 +408,8 @@ func firstNonEmpty(vals ...string) string {
 		}
 	}
 	return ""
+}
+
+func warnf(format string, a ...any) {
+	fmt.Fprintf(os.Stderr, "goroot: warning: "+format+"\n", a...)
 }

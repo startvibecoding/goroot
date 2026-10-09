@@ -91,5 +91,15 @@ if timeout 10 $BIN client status >/dev/null 2>&1; then
 else
   bad "daemon/client unusable"
 fi
+
+echo "==> Go SDK"
+if go build -o /tmp/goroot-sdk-smoke ./examples/sdk 2>/dev/null; then
+  out=$(timeout 30 /tmp/goroot-sdk-smoke 2>/dev/null)
+  case "$out" in *"hello from demo"*) ok "sdk run captures output";; *) bad "sdk run (no output)";; esac
+  case "$out" in *"exit code 7"*) ok "sdk exit code propagation";; *) bad "sdk exit code";; esac
+  rm -f /tmp/goroot-sdk-smoke
+else
+  bad "sdk example build"
+fi
 echo "passed=$pass failed=$fail"
 [ "$fail" -eq 0 ]

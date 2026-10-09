@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"goroot/sandbox"
 )
 
 // The daemon (`goroot server`) listens on a unix socket under ~/.goroot and
@@ -34,10 +36,10 @@ func taskLogPath(id string) string {
 
 // Request is what a client sends to the server.
 type Request struct {
-	Op     string `json:"op"`               // run|ps|logs|stop|rm|status|shutdown
-	ID     string `json:"id,omitempty"`     // task id
-	Spec   *Spec  `json:"spec,omitempty"`   // for op=run
-	Follow bool   `json:"follow,omitempty"` // for op=logs
+	Op     string        `json:"op"`               // run|ps|logs|stop|rm|status|shutdown
+	ID     string        `json:"id,omitempty"`     // task id
+	Spec   *sandbox.Spec `json:"spec,omitempty"`   // for op=run
+	Follow bool          `json:"follow,omitempty"` // for op=logs
 }
 
 // Response is the server's reply. For op=logs with Follow set, the JSON header

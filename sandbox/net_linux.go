@@ -1,11 +1,11 @@
 //go:build linux
 
-package main
+package sandbox
 
 import "golang.org/x/sys/unix"
 
-// setLoopbackUp brings the loopback interface up inside a private
-// network namespace. Without this, localhost is unreachable.
+// setLoopbackUp brings the loopback interface up inside a private network
+// namespace. Without this, localhost is unreachable.
 func setLoopbackUp() error {
 	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, 0)
 	if err != nil {

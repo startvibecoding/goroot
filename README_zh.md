@@ -23,6 +23,8 @@ uid=0(root) gid=0(root) groups=65534(nobody),0(root)
 - **真正的隔离**：user / mount / pid / uts / ipc / net 六个命名空间（可单独关闭）。
 - **后台任务**：一对 `server`/`client` 守护进程子命令（`~/.goroot` 下的 unix socket），
   以分离方式运行容器并管理日志。
+- **Go SDK**：引入 `goroot/sandbox` 包，即可在你自己的 Go 程序里运行沙盒
+  （见 [Go SDK](#go-sdk)）。
 - **单进程**：默认直接把目标命令 exec 成容器内的 PID 1，每个容器无额外守护进程。
 - **完整挂载视图**：`/proc`、只读 `/sys`、`/dev`（含设备节点、`/dev/pts`、
   `/dev/shm`）、`/tmp`。
@@ -175,6 +177,50 @@ goroot client shutdown                    # 关闭守护进程及其所有任务
 守护进程停止后其任务会被杀掉且列表丢失。日志位于 `~/.goroot/logs/<id>.log`。
 
 ## 兼容性与优雅降级
+## Go SDK
+
+容器引擎是可复用的包 `goroot/sandbox`，其他 Go 程序可以直接引入，获得容器沙盒
+能力：
+
+```go
+package main
+
+import (
+	"context"
+	"os"
+
+	"goroot/sandbox"
+)
+
+func main() {
+	sandbox.Init() // 必须是 main 的第一条语句（见下）
+
+	code, err := sandbox.Run(context.Background(), &sandbox.Spec{
+		Rootfs:   "/path/to/rootfs",
+		Hostname: "demo",
+		Argv:     []string{"/bin/sh", "-c", "id; echo hi"},
+	}, sandbox.Stdio{Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr})
+	if err != nil {
+		panic(err)
+	}
+	os.Exit(code)
+}
+```
+
+API：`Spec`、`Stdio`、`Start`（返回 `*Sandbox`）、`Run`、`Sandbox.Wait`、
+`Sandbox.Signal`、`Sandbox.Kill`、`Sandbox.Pid`、`Extract`、`Detect`。
+
+- **`sandbox.Init()` 必须是 `main` 的第一条语句。** 容器的 init 阶段是通过把
+  *你自己的二进制* 以 `GOROOT_INIT=1` 重新 exec 出来的；`Init` 检测到该标记就会
+  进入 init 阶段（此时不会返回），否则立即返回。由于会重新执行你的二进制，请让
+  包级 `init()` 函数保持无副作用。
+- `Stdio` 接受任意 `io.Reader`/`io.Writer`，所以可以把输出捕获到 buffer 或管道。
+  终端 `*os.File` 会自动识别 TTY。
+- 内置的 Alpine rootfs 放在单独的包 `goroot/assets`（按需引入，约 3.5MB）；配合
+  `sandbox.Extract` 即可把它解包作为默认 rootfs。可参考 `examples/sdk`。
+
+构建示例：`go build -o /tmp/goroot-sdk ./examples/sdk && /tmp/goroot-sdk`。
+
 
 `goroot` 不假设所有命名空间都存在。启动前它用 `clone(2)` 逐个**探测**能力
 （注意：不能在 Go 进程内直接 `unshare()`——Go 是多线程的，内核会拒绝；必须像
@@ -244,16 +290,18 @@ ROOTFS=./myrootfs ./scripts/smoke.sh   # 复用已有 rootfs
 
 代码结构：
 
+代码结构：三个包——`goroot`（CLI + 守护进程）、`goroot/sandbox`（引擎 + SDK）、
+`goroot/assets`（内置 rootfs）。
+
 | 文件 | 职责 |
 | --- | --- |
-| `main.go` | CLI 解析与命令分发 |
-| `spec.go` | 容器描述结构（JSON 传给子进程） |
-| `run.go` | 父进程侧：能力探测、降级、flags/uid 映射、启动 |
-| `probe_linux.go` | 命名空间能力探测、`doctor` 自检 |
-| `init_linux.go` | 子进程侧：挂载、pivot_root、exec、微型 init |
-| `net_linux.go` | 拉起 lo、终端检测 |
-| `extract.go` | tar 解包（本地/URL） |
-| `assets.go` | 内置默认 rootfs（`assets/*.tar.gz`）、缓存解包 |
+| `main.go` | CLI 解析与分发；`sandbox.Init()`、`buildRunSpec` |
+| `run.go` | 前台 `run`（把 stdio/信号接到 `sandbox.Run`） |
+| `doctor.go` | `doctor` 自检（用 `sandbox.Detect`） |
+| `extract.go` | `extract` 命令（本地/URL 获取） |
+| `assets.go` | 把内置 rootfs 解到 `~/.cache/goroot` |
 | `protocol.go` | 守护进程通讯协议 + `~/.goroot` 路径辅助 |
 | `daemon.go` | `server`：任务管理、unix socket 监听、日志流式输出 |
 | `client.go` | `client`：run/ps/logs/stop/rm/status/shutdown |
+| `sandbox/*.go` | 引擎 / SDK（Spec、Start/Run/Wait/Signal、Init、Extract、Detect） |
+| `assets/assets.go` | Alpine tarball 的 `go:embed` |

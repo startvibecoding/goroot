@@ -29,6 +29,8 @@ uid=0(root) gid=0(root) groups=65534(nobody),0(root)
   turned off individually).
 - **Background tasks** — a `server`/`client` daemon pair (unix socket under
   `~/.goroot`) runs detached containers and can stream their logs.
+- **Go SDK** — import the `goroot/sandbox` package to run sandboxes from your own
+  Go program (see [Go SDK](#go-sdk)).
 - **Single process** — by default the target command is `exec`'d as PID 1 of the
   container; there is no per-container supervisor.
 - **Complete mount view** — `/proc`, read-only `/sys`, `/dev` (device nodes,
@@ -200,6 +202,52 @@ goroot client shutdown                    # stop the daemon and its tasks
 `client run` accepts the same options as `run`. Detached tasks are launched with
 the tiny init as PID 1, so `stop` delivers a graceful SIGTERM (exit code 143) and
 orphaned children are reaped. Task state is in-memory: if the daemon stops, its
+## Go SDK
+
+The container engine is a reusable package, `goroot/sandbox`, so other Go programs
+can embed container sandboxing:
+
+```go
+package main
+
+import (
+	"context"
+	"os"
+
+	"goroot/sandbox"
+)
+
+func main() {
+	sandbox.Init() // MUST be the first statement of main (see below)
+
+	code, err := sandbox.Run(context.Background(), &sandbox.Spec{
+		Rootfs:   "/path/to/rootfs",
+		Hostname: "demo",
+		Argv:     []string{"/bin/sh", "-c", "id; echo hi"},
+	}, sandbox.Stdio{Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr})
+	if err != nil {
+		panic(err)
+	}
+	os.Exit(code)
+}
+```
+
+API: `Spec`, `Stdio`, `Start` (returns a `*Sandbox`), `Run`, `Sandbox.Wait`,
+`Sandbox.Signal`, `Sandbox.Kill`, `Sandbox.Pid`, `Extract`, `Detect`.
+
+- **`sandbox.Init()` must be the very first statement of your `main`.** The
+  container init runs as a re-exec of *your* binary with `GOROOT_INIT=1` set;
+  `Init` detects that and runs the init stage (it never returns in that case, and
+  returns immediately otherwise). Because your binary is re-executed, keep your
+  package-level `init()` functions free of side effects.
+- `Stdio` accepts any `io.Reader`/`io.Writer`, so you can capture output into a
+  buffer or a pipe. TTY is auto-detected for terminal `*os.File`s.
+- The embedded Alpine rootfs lives in a separate package, `goroot/assets` (opt-in,
+  ~3.5 MB); combined with `sandbox.Extract` you can unpack it as your default
+  rootfs. See `examples/sdk`.
+
+Build the example: `go build -o /tmp/goroot-sdk ./examples/sdk && /tmp/goroot-sdk`.
+
 tasks are killed and the list is lost. Logs live in `~/.goroot/logs/<id>.log`.
 
 ## Compatibility & graceful degradation
@@ -281,16 +329,18 @@ ROOTFS=./myrootfs ./scripts/smoke.sh   # reuse an existing rootfs
 
 Code layout:
 
+Three packages: `goroot` (CLI + daemon), `goroot/sandbox` (engine + SDK),
+`goroot/assets` (embedded rootfs).
+
 | File | Responsibility |
 | --- | --- |
-| `main.go` | CLI parsing and command dispatch |
-| `spec.go` | container description struct (JSON passed to the child) |
-| `run.go` | parent side: capability probing, degradation, flags/uid maps, launch |
-| `probe_linux.go` | namespace capability probing, `doctor` self-check |
-| `init_linux.go` | child side: mounts, pivot_root, exec, tiny init |
-| `net_linux.go` | bring up `lo`, terminal detection |
-| `extract.go` | tar unpacking (local/URL) |
-| `assets.go` | embedded default rootfs (`assets/*.tar.gz`), cache extraction |
+| `main.go` | CLI parsing and dispatch; `sandbox.Init()`, `buildRunSpec` |
+| `run.go` | foreground `run` (wires stdio + signals into `sandbox.Run`) |
+| `doctor.go` | `doctor` self-check (uses `sandbox.Detect`) |
+| `extract.go` | `extract` command (URL/local fetch) |
+| `assets.go` | resolve the built-in rootfs into `~/.cache/goroot` |
 | `protocol.go` | daemon wire protocol + `~/.goroot` path helpers |
 | `daemon.go` | `server`: task manager, unix-socket listener, log streaming |
 | `client.go` | `client`: run/ps/logs/stop/rm/status/shutdown |
+| `sandbox/*.go` | the engine / SDK (Spec, Start/Run/Wait/Signal, Init, Extract, Detect) |
+| `assets/assets.go` | `go:embed` of the Alpine tarball |

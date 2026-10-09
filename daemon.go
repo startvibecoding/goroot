@@ -18,6 +18,8 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
+
+	"goroot/sandbox"
 )
 
 // --- server command ---------------------------------------------------------
@@ -71,8 +73,7 @@ func startDaemon() error {
 	// The daemon must not inherit stray descriptors from the caller (e.g. a
 	// control pipe the invoking tool is waiting on), otherwise it keeps that
 	// pipe open forever and the caller never sees EOF. Go's exec preserves
-	// inherited fds, so mark them close-on-exec. The caller exits right away,
-	// so this has no downside.
+	// inherited fds, so mark them close-on-exec. The caller exits right away.
 	setCloexecOnStrayFds()
 
 	if err := cmd.Start(); err != nil {
@@ -147,7 +148,7 @@ func runServer() int {
 // --- task manager -----------------------------------------------------------
 
 type task struct {
-	cmd  *exec.Cmd
+	sb   *sandbox.Sandbox
 	info TaskInfo
 }
 
@@ -170,7 +171,7 @@ func newID() string {
 	return hex.EncodeToString(b)
 }
 
-func netMode(spec *Spec) string {
+func netMode(spec *sandbox.Spec) string {
 	if spec.ShareNet {
 		return "shared"
 	}
@@ -178,8 +179,8 @@ func netMode(spec *Spec) string {
 }
 
 // run starts a detached container task and returns its id.
-func (m *taskManager) run(spec *Spec) (string, error) {
-	if err := prepareSpec(spec); err != nil {
+func (m *taskManager) run(spec *sandbox.Spec) (string, error) {
+	if err := resolveRootfs(spec); err != nil {
 		return "", err
 	}
 	// Detached tasks get the tiny init as PID 1: it reaps orphans and turns
@@ -198,26 +199,19 @@ func (m *taskManager) run(spec *Spec) (string, error) {
 		return "", err
 	}
 
-	cmd, err := buildContainerCmd(spec, devnull, lf, lf, false)
-	if err != nil {
-		lf.Close()
-		devnull.Close()
-		return "", err
-	}
-	if err := cmd.Start(); err != nil {
-		lf.Close()
-		devnull.Close()
-		return "", fmt.Errorf("start task: %w", err)
-	}
+	sb, err := sandbox.Start(spec, sandbox.Stdio{Stdin: devnull, Stdout: lf, Stderr: lf})
 	lf.Close()
 	devnull.Close()
+	if err != nil {
+		return "", err
+	}
 
-	t := &task{cmd: cmd, info: TaskInfo{
+	t := &task{sb: sb, info: TaskInfo{
 		ID:      id,
 		Argv:    append([]string(nil), spec.Argv...),
 		Rootfs:  spec.Rootfs,
 		Net:     netMode(spec),
-		PID:     cmd.Process.Pid,
+		PID:     sb.Pid(),
 		State:   "running",
 		Started: time.Now().Format(time.RFC3339),
 		LogPath: logPath,
@@ -229,7 +223,7 @@ func (m *taskManager) run(spec *Spec) (string, error) {
 	m.mu.Unlock()
 
 	go func() {
-		code := waitExitCode(cmd)
+		code, _ := sb.Wait()
 		m.mu.Lock()
 		t.info.State = "exited"
 		t.info.Exit = code
@@ -245,9 +239,9 @@ func (m *taskManager) get(id string) *task {
 }
 
 func (m *taskManager) state(id string) string {
-	if t := m.get(id); t != nil {
-		m.mu.Lock()
-		defer m.mu.Unlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if t := m.tasks[id]; t != nil {
 		return t.info.State
 	}
 	return "gone"
@@ -272,12 +266,9 @@ func (m *taskManager) stop(id string, force bool) error {
 	if t == nil {
 		return fmt.Errorf("no such task: %s", id)
 	}
-	if t.cmd.Process == nil {
-		return nil
-	}
-	_ = t.cmd.Process.Signal(syscall.SIGTERM)
+	_ = t.sb.Signal(syscall.SIGTERM)
 	if force {
-		_ = t.cmd.Process.Signal(syscall.SIGKILL)
+		_ = t.sb.Kill()
 		return nil
 	}
 	deadline := time.Now().Add(5 * time.Second)
@@ -287,7 +278,7 @@ func (m *taskManager) stop(id string, force bool) error {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	_ = t.cmd.Process.Signal(syscall.SIGKILL)
+	_ = t.sb.Kill()
 	return nil
 }
 
@@ -371,8 +362,7 @@ func (m *taskManager) serve(conn net.Conn) {
 		streamLog(conn, t.info.LogPath, m, req.ID, req.Follow)
 
 	case opStop:
-		force := false
-		if err := m.stop(req.ID, force); err != nil {
+		if err := m.stop(req.ID, false); err != nil {
 			enc.Encode(Response{Error: err.Error()})
 			return
 		}

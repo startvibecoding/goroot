@@ -1,35 +1,39 @@
-//go:build linux
-
 package main
 
 import (
 	"bytes"
-	_ "embed"
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"goroot/assets"
+	"goroot/sandbox"
 )
 
-// The built-in default rootfs: an Alpine minirootfs shipped inside the binary
-// (see assets/). This is what `goroot run` uses when no -r/--root is given, so
-// the tool works out of the box on a fresh machine.
-const (
-	embeddedTarball = "alpine-minirootfs-3.20.0-x86_64.tar.gz"
-	embeddedRootDir = "alpine-3.20.0-x86_64"
-)
+// resolveRootfs fills in spec.Rootfs with the extracted built-in rootfs when the
+// caller did not provide one.
+func resolveRootfs(spec *sandbox.Spec) error {
+	if spec.Rootfs != "" {
+		return nil
+	}
+	dir, err := ensureEmbeddedRootfs()
+	if err != nil {
+		return fmt.Errorf("prepare built-in rootfs: %w", err)
+	}
+	info("using built-in Alpine minirootfs (cache: %s)", dir)
+	spec.Rootfs = dir
+	return nil
+}
 
-//go:embed assets/alpine-minirootfs-3.20.0-x86_64.tar.gz
-var embeddedRootfs []byte
-
-// ensureEmbeddedRootfs extracts the built-in rootfs to a per-user cache on first
-// use and returns its path. Extraction is done into a temporary directory that
-// is atomically renamed, so concurrent invocations are safe.
+// ensureEmbeddedRootfs extracts the embedded Alpine minirootfs to a per-user
+// cache on first use and returns its path. Extraction is race-safe (temporary
+// directory + atomic rename).
 func ensureEmbeddedRootfs() (string, error) {
 	base, err := os.UserCacheDir()
 	if err != nil || base == "" {
 		base = os.TempDir()
 	}
-	dir := filepath.Join(base, "goroot", embeddedRootDir)
+	dir := filepath.Join(base, "goroot", assets.RootDir)
 	marker := filepath.Join(dir, ".goroot-ok")
 	if _, err := os.Stat(marker); err == nil {
 		return dir, nil
@@ -42,9 +46,9 @@ func ensureEmbeddedRootfs() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := untar(bytes.NewReader(embeddedRootfs), tmp, embeddedTarball, 0); err != nil {
+	if err := sandbox.Extract(bytes.NewReader(assets.Tarball), tmp, assets.TarballName, 0); err != nil {
 		os.RemoveAll(tmp)
-		return "", fmt.Errorf("extract built-in rootfs: %w", err)
+		return "", err
 	}
 	if err := os.WriteFile(filepath.Join(tmp, ".goroot-ok"), []byte("1\n"), 0o644); err != nil {
 		os.RemoveAll(tmp)
@@ -53,7 +57,6 @@ func ensureEmbeddedRootfs() (string, error) {
 
 	if err := os.Rename(tmp, dir); err != nil {
 		os.RemoveAll(tmp)
-		// Another process may have won the race and populated dir already.
 		if _, e := os.Stat(marker); e == nil {
 			return dir, nil
 		}
