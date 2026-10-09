@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"goroot/sandbox"
+	"github.com/startvibecoding/goroot/sandbox"
 )
 
 // cmdExtract unpacks a (possibly compressed) tar archive into dest, discarding

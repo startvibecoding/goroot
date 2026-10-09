@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"goroot/sandbox"
+	"github.com/startvibecoding/goroot/sandbox"
 )
 
 const version = "0.1.0"

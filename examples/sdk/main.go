@@ -12,8 +12,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"goroot/assets"
-	"goroot/sandbox"
+	"github.com/startvibecoding/goroot/assets"
+	"github.com/startvibecoding/goroot/sandbox"
 )
 
 func main() {

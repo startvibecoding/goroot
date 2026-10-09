@@ -19,7 +19,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"goroot/sandbox"
+	"github.com/startvibecoding/goroot/sandbox"
 )
 
 // --- server command ---------------------------------------------------------

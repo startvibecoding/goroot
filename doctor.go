@@ -9,8 +9,8 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"goroot/assets"
-	"goroot/sandbox"
+	"github.com/startvibecoding/goroot/assets"
+	"github.com/startvibecoding/goroot/sandbox"
 )
 
 func cmdDoctor(_ []string) int {

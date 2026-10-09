@@ -23,8 +23,8 @@ uid=0(root) gid=0(root) groups=65534(nobody),0(root)
 - **真正的隔离**：user / mount / pid / uts / ipc / net 六个命名空间（可单独关闭）。
 - **后台任务**：一对 `server`/`client` 守护进程子命令（`~/.goroot` 下的 unix socket），
   以分离方式运行容器并管理日志。
-- **Go SDK**：引入 `goroot/sandbox` 包，即可在你自己的 Go 程序里运行沙盒
-  （见 [Go SDK](#go-sdk)）。
+- **Go SDK**：引入 `github.com/startvibecoding/goroot/sandbox` 包，即可在你自己的 Go 程序里运行
+  沙盒（见 [Go SDK](#go-sdk)）。
 - **单进程**：默认直接把目标命令 exec 成容器内的 PID 1，每个容器无额外守护进程。
 - **完整挂载视图**：`/proc`、只读 `/sys`、`/dev`（含设备节点、`/dev/pts`、
   `/dev/shm`）、`/tmp`。
@@ -179,7 +179,7 @@ goroot client shutdown                    # 关闭守护进程及其所有任务
 ## 兼容性与优雅降级
 ## Go SDK
 
-容器引擎是可复用的包 `goroot/sandbox`，其他 Go 程序可以直接引入，获得容器沙盒
+容器引擎是可复用的包 `github.com/startvibecoding/goroot/sandbox`，其他 Go 程序可以直接引入，获得容器沙盒
 能力：
 
 ```go
@@ -189,7 +189,7 @@ import (
 	"context"
 	"os"
 
-	"goroot/sandbox"
+	"github.com/startvibecoding/goroot/sandbox"
 )
 
 func main() {
@@ -216,7 +216,7 @@ API：`Spec`、`Stdio`、`Start`（返回 `*Sandbox`）、`Run`、`Sandbox.Wait`
   包级 `init()` 函数保持无副作用。
 - `Stdio` 接受任意 `io.Reader`/`io.Writer`，所以可以把输出捕获到 buffer 或管道。
   终端 `*os.File` 会自动识别 TTY。
-- 内置的 Alpine rootfs 放在单独的包 `goroot/assets`（按需引入，约 3.5MB）；配合
+- 内置的 Alpine rootfs 放在单独的包 `github.com/startvibecoding/goroot/assets`（按需引入，约 3.5MB）；配合
   `sandbox.Extract` 即可把它解包作为默认 rootfs。可参考 `examples/sdk`。
 
 构建示例：`go build -o /tmp/goroot-sdk ./examples/sdk && /tmp/goroot-sdk`。
@@ -290,8 +290,8 @@ ROOTFS=./myrootfs ./scripts/smoke.sh   # 复用已有 rootfs
 
 代码结构：
 
-代码结构：三个包——`goroot`（CLI + 守护进程）、`goroot/sandbox`（引擎 + SDK）、
-`goroot/assets`（内置 rootfs）。
+代码结构：三个包——根包 `github.com/startvibecoding/goroot`（CLI + 守护进程）、
+`.../sandbox`（引擎 + SDK）、`.../assets`（内置 rootfs）。
 
 | 文件 | 职责 |
 | --- | --- |

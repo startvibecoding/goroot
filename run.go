@@ -7,7 +7,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"goroot/sandbox"
+	"github.com/startvibecoding/goroot/sandbox"
 )
 
 // runSpec runs one container in the foreground, attached to the current

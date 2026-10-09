@@ -48,8 +48,8 @@ Top-level CLI subcommands (`main.go`): `run`, `extract`/`pull`, `doctor`/`check`
 Three packages:
 
 - **`goroot`** (root, `package main`) — the CLI + daemon.
-- **`goroot/sandbox`** — the reusable container engine (also the Go SDK).
-- **`goroot/assets`** — the embedded default rootfs (opt-in; ~3.5 MB).
+- **`github.com/startvibecoding/goroot/sandbox`** — the reusable container engine (also the Go SDK).
+- **`github.com/startvibecoding/goroot/assets`** — the embedded default rootfs (opt-in; ~3.5 MB).
 
 | file | responsibility |
 | --- | --- |
@@ -69,7 +69,7 @@ Three packages:
 | `sandbox/extract.go` | `Extract` tar/.gz/.bz2 unpacking |
 | `assets/assets.go` | `go:embed` of the Alpine tarball |
 
-## Go SDK (`goroot/sandbox`)
+## Go SDK (`github.com/startvibecoding/goroot/sandbox`)
 
 The `sandbox` package is the public SDK: other programs import it to run
 sandboxes. API: `Spec`, `Stdio`, `Start`, `Run`, `Wait`, `Signal`, `Kill`,
@@ -82,13 +82,12 @@ sandboxes. API: `Spec`, `Stdio`, `Start`, `Run`, `Wait`, `Signal`, `Kill`,
   immediately. See `examples/sdk`.
 - The re-exec target is `os.Executable()`. Package-level `init()` funcs of the
   host program therefore run in the child too — keep them side-effect free.
-- The SDK never depends on the embedded rootfs; import `goroot/assets` only if you
+- The SDK never depends on the embedded rootfs; import `github.com/startvibecoding/goroot/assets` only if you
   want it.
 - `Stdio` takes any `io.Reader`/`io.Writer` (nil = empty stdin / discarded out).
   TTY is auto-detected for terminal `*os.File`s.
-- The module path is currently `goroot` (fine for local/vendored use). Before
-  publishing, set a resolvable path (`go mod edit -module github.com/you/goroot`)
-  so external programs can `go get` it.
+- The module path is `github.com/startvibecoding/goroot`; import packages as
+  `github.com/startvibecoding/goroot/{sandbox,assets}`.
 
 
 ## Critical invariants — do not break these

@@ -29,7 +29,8 @@ uid=0(root) gid=0(root) groups=65534(nobody),0(root)
   turned off individually).
 - **Background tasks** — a `server`/`client` daemon pair (unix socket under
   `~/.goroot`) runs detached containers and can stream their logs.
-- **Go SDK** — import the `goroot/sandbox` package to run sandboxes from your own
+- **Go SDK** — import the `github.com/startvibecoding/goroot/sandbox` package to
+  run sandboxes from your own
   Go program (see [Go SDK](#go-sdk)).
 - **Single process** — by default the target command is `exec`'d as PID 1 of the
   container; there is no per-container supervisor.
@@ -204,7 +205,7 @@ the tiny init as PID 1, so `stop` delivers a graceful SIGTERM (exit code 143) an
 orphaned children are reaped. Task state is in-memory: if the daemon stops, its
 ## Go SDK
 
-The container engine is a reusable package, `goroot/sandbox`, so other Go programs
+The container engine is a reusable package, `github.com/startvibecoding/goroot/sandbox`, so other Go programs
 can embed container sandboxing:
 
 ```go
@@ -214,7 +215,7 @@ import (
 	"context"
 	"os"
 
-	"goroot/sandbox"
+	"github.com/startvibecoding/goroot/sandbox"
 )
 
 func main() {
@@ -242,7 +243,7 @@ API: `Spec`, `Stdio`, `Start` (returns a `*Sandbox`), `Run`, `Sandbox.Wait`,
   package-level `init()` functions free of side effects.
 - `Stdio` accepts any `io.Reader`/`io.Writer`, so you can capture output into a
   buffer or a pipe. TTY is auto-detected for terminal `*os.File`s.
-- The embedded Alpine rootfs lives in a separate package, `goroot/assets` (opt-in,
+- The embedded Alpine rootfs lives in a separate package, `github.com/startvibecoding/goroot/assets` (opt-in,
   ~3.5 MB); combined with `sandbox.Extract` you can unpack it as your default
   rootfs. See `examples/sdk`.
 
@@ -329,8 +330,8 @@ ROOTFS=./myrootfs ./scripts/smoke.sh   # reuse an existing rootfs
 
 Code layout:
 
-Three packages: `goroot` (CLI + daemon), `goroot/sandbox` (engine + SDK),
-`goroot/assets` (embedded rootfs).
+Three packages: the root `github.com/startvibecoding/goroot` (CLI + daemon),
+`.../sandbox` (engine + SDK), `.../assets` (embedded rootfs).
 
 | File | Responsibility |
 | --- | --- |

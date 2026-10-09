@@ -6,8 +6,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"goroot/assets"
-	"goroot/sandbox"
+	"github.com/startvibecoding/goroot/assets"
+	"github.com/startvibecoding/goroot/sandbox"
 )
 
 // resolveRootfs fills in spec.Rootfs with the extracted built-in rootfs when the

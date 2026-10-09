@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"goroot/sandbox"
+	"github.com/startvibecoding/goroot/sandbox"
 )
 
 // The daemon (`goroot server`) listens on a unix socket under ~/.goroot and
