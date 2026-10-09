@@ -20,10 +20,15 @@ func main() {
 	case "__init":
 		// Hidden stage executed inside the new namespaces.
 		os.Exit(initMain())
+	case "__probeok":
+		// Hidden stage: proves a namespace setup succeeded.
+		os.Exit(probeOK(args[1:]))
 	case "run":
 		os.Exit(cmdRun(args[1:]))
 	case "extract", "pull":
 		os.Exit(cmdExtract(args[1:]))
+	case "doctor", "check":
+		os.Exit(cmdDoctor(args[1:]))
 	case "version", "-v", "--version":
 		fmt.Printf("goroot %s\n", version)
 		os.Exit(0)
@@ -43,6 +48,7 @@ func usage() {
 Usage:
   goroot run [options] [--] <command> [args...]
   goroot extract [-c N] <tarball|url> <dest>
+  goroot doctor
   goroot version
 
 run options:
@@ -70,7 +76,10 @@ Examples:
 Notes:
   * Files in the rootfs should be owned by your host user (extract as
     yourself). Inside the container that user maps to root (uid 0).
-  * Needs unprivileged user namespaces (kernel.unprivileged_userns_clone=1).
+  * Needs unprivileged user namespaces when run as a normal user
+    (kernel.unprivileged_userns_clone=1); namespaces that a given kernel
+    cannot provide are dropped automatically with a warning. Run
+    'goroot doctor' to see exactly what is supported here.
 `)
 }
 

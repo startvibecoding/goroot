@@ -12,9 +12,9 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// runParent is executed in the CLI process. It prepares the namespace
-// flags + uid/gid maps and re-executes itself as the hidden "__init"
-// stage inside the freshly created namespaces.
+// runParent is executed in the CLI process. It decides which namespaces this
+// kernel/environment can actually provide, degrades gracefully, then
+// re-executes itself as the hidden "__init" stage inside them.
 func runParent(spec *Spec) int {
 	abs, err := filepath.Abs(spec.Rootfs)
 	if err != nil {
@@ -27,23 +27,51 @@ func runParent(spec *Spec) int {
 	spec.HostUID = os.Getuid()
 	spec.HostGID = os.Getgid()
 
-	exe, err := os.Executable()
-	if err != nil {
-		exe = "/proc/self/exe"
+	realRoot := os.Geteuid() == 0
+
+	// --- Capability probing & graceful degradation -----------------------
+	// Probe the user namespace first: without it an unprivileged process
+	// cannot mount, pivot_root or map ids, so we must stop early with an
+	// actionable message instead of failing deep inside the child.
+	haveUser := probeNS("user", false)
+	if !realRoot && !haveUser {
+		fatal("user namespaces are unavailable and you are not root.\n" +
+			"  Enable them:  sudo sysctl -w kernel.unprivileged_userns_clone=1\n" +
+			"  Or use proot/bwrap, which fake the rootfs in userspace.")
 	}
 
-	self := "/proc/self/exe"
-	if _, err := os.Stat(self); err != nil {
-		self = exe
+	// Non-root must use a userns. Root gets full access without one (and
+	// is then able to represent *all* uids, not just 0).
+	useUser := !realRoot && haveUser
+	if !useUser {
+		spec.NoUser = true
 	}
 
-	cmd := exec.Command(self, "__init")
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	cmd.Env = append(os.Environ(), "GOROOT_SPEC="+marshalSpec(spec))
+	uts := !spec.NoUTS && probeNS("uts", !realRoot)
+	if !spec.NoUTS && !uts {
+		warn("UTS namespace unavailable; keeping the host hostname")
+		spec.NoUTS = true
+	}
+	ipc := !spec.NoIPC && probeNS("ipc", !realRoot)
+	if !spec.NoIPC && !ipc {
+		warn("IPC namespace unavailable; continuing without it")
+		spec.NoIPC = true
+	}
+	pid := !spec.NoPID && probeNS("pid", !realRoot)
+	if !spec.NoPID && !pid {
+		warn("PID namespace unavailable; the host /proc will be visible")
+		spec.NoPID = true
+	}
+	net := !spec.ShareNet && probeNS("net", !realRoot)
+	if !spec.ShareNet && !net {
+		warn("network namespace unavailable; sharing the host network")
+		spec.ShareNet = true
+	}
 
-	cloneFlags := uintptr(unix.CLONE_NEWUSER | unix.CLONE_NEWNS)
+	cloneFlags := uintptr(unix.CLONE_NEWNS)
+	if useUser {
+		cloneFlags |= unix.CLONE_NEWUSER
+	}
 	if !spec.NoUTS {
 		cloneFlags |= unix.CLONE_NEWUTS
 	}
@@ -59,14 +87,16 @@ func runParent(spec *Spec) int {
 
 	attr := &syscall.SysProcAttr{
 		Cloneflags: cloneFlags,
-		UidMappings: []syscall.SysProcIDMap{
+		Pdeathsig:  syscall.SIGKILL,
+	}
+	if useUser {
+		attr.UidMappings = []syscall.SysProcIDMap{
 			{ContainerID: 0, HostID: os.Getuid(), Size: 1},
-		},
-		GidMappings: []syscall.SysProcIDMap{
+		}
+		attr.GidMappings = []syscall.SysProcIDMap{
 			{ContainerID: 0, HostID: os.Getgid(), Size: 1},
-		},
-		GidMappingsEnableSetgroups: false,
-		Pdeathsig:                  syscall.SIGKILL,
+		}
+		attr.GidMappingsEnableSetgroups = false
 	}
 
 	// Interactive terminal: put the container in the foreground process
@@ -82,11 +112,17 @@ func runParent(spec *Spec) int {
 		attr.Ctty = 0
 	}
 
+	cmd := exec.Command(selfPath(), "__init")
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Env = append(os.Environ(), "GOROOT_SPEC="+marshalSpec(spec))
 	cmd.SysProcAttr = attr
 
 	if err := cmd.Start(); err != nil {
 		if errors.Is(err, syscall.EPERM) || errors.Is(err, syscall.EINVAL) {
-			fatal("cannot create namespaces: %v\n(unprivileged user namespaces may be disabled)", err)
+			fatal("cannot create namespaces: %v\n"+
+				"  Try `goroot doctor` to see what is supported here.", err)
 		}
 		fatal("start container: %v", err)
 	}
@@ -120,4 +156,8 @@ func runParent(spec *Spec) int {
 	}
 	fmt.Fprintf(os.Stderr, "goroot: %v\n", err)
 	return 127
+}
+
+func warn(format string, a ...any) {
+	fmt.Fprintf(os.Stderr, "goroot: warning: "+format+"\n", a...)
 }

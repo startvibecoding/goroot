@@ -121,7 +121,11 @@ func setupContainer(spec *Spec) error {
 			return fmt.Errorf("bind /proc: %w", err)
 		}
 	} else if err := unix.Mount("proc", procDst, "proc", unix.MS_NOSUID|unix.MS_NODEV|unix.MS_NOEXEC, ""); err != nil {
-		return fmt.Errorf("mount /proc: %w", err)
+		// Some older kernels refuse a fresh procfs in a userns; degrade.
+		if berr := unix.Mount("/proc", procDst, "", unix.MS_BIND|unix.MS_REC, ""); berr != nil {
+			return fmt.Errorf("mount /proc: %v (bind fallback: %v)", err, berr)
+		}
+		warn("falling back to a bind of the host /proc")
 	}
 
 	// 4. /sys: a fresh sysfs is mountable because we own a private
@@ -192,13 +196,18 @@ func setupContainer(spec *Spec) error {
 	}
 
 	// 13. Drop to the requested uid/gid (still inside the userns).
-	// Only uid/gid 0 is mapped in this single-id user namespace.
+	// In a single-id user namespace only uid/gid 0 is mapped; as real
+	// root (no userns) any id is available.
 	if spec.GID != 0 || spec.UID != 0 {
+		hint := ""
+		if !spec.NoUser {
+			hint = " (only uid/gid 0 is mapped in this rootless userns)"
+		}
 		if err := unix.Setgid(spec.GID); err != nil {
-			return fmt.Errorf("setgid %d: %w (only uid/gid 0 is mapped in this rootless userns)", spec.GID, err)
+			return fmt.Errorf("setgid %d: %w%s", spec.GID, err, hint)
 		}
 		if err := unix.Setuid(spec.UID); err != nil {
-			return fmt.Errorf("setuid %d: %w (only uid/gid 0 is mapped in this rootless userns)", spec.UID, err)
+			return fmt.Errorf("setuid %d: %w%s", spec.UID, err, hint)
 		}
 	}
 

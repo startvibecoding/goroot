@@ -29,6 +29,7 @@ type Spec struct {
 	NoPID    bool     `json:"noPid"`
 	NoIPC    bool     `json:"noIpc"`
 	NoUTS    bool     `json:"noUts"`
+	NoUser   bool     `json:"noUser"`
 	UID      int      `json:"uid"`
 	GID      int      `json:"gid"`
 	UseInit  bool     `json:"useInit"`

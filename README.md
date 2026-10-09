@@ -24,6 +24,8 @@ uid=0(root) gid=0(root) groups=65534(nobody),0(root)
 - **可选微型 init**（`--init`）：PID 1 回收僵尸进程并转发信号，适合跑服务。
 - 内置 **rootfs 解包**（本地文件或 `http(s)://` URL，支持 .tar/.tar.gz/.tar.bz2）。
 - 交互式终端：自动接管前台进程组，Ctrl-C / 作业控制可用。
+- **内核能力自检**（`goroot doctor`）与**优雅降级**：低内核/受限环境下缺哪个
+  命名空间就关哪个，并给出警告，而不是直接崩溃。
 
 ## 环境要求
 
@@ -31,10 +33,10 @@ uid=0(root) gid=0(root) groups=65534(nobody),0(root)
 - 若要挂载 `sysfs`，需能创建自己的 network namespace（默认会创建）；
 - Go ≥ 1.21。
 
-检查：
+缺失的能力会被自动探测并降级（见下方「兼容性与优雅降级」）。先跑一次自检：
 
 ```sh
-cat /proc/sys/kernel/unprivileged_userns_clone   # 期望 1
+goroot doctor
 ```
 
 ## 构建
@@ -74,6 +76,7 @@ make install        # 安装到 /usr/local/bin
 ```
 goroot run [options] [--] <command> [args...]
 goroot extract [-c N] <tarball|url> <dest>
+goroot doctor
 goroot version
 ```
 
@@ -118,6 +121,53 @@ gid_map: 0 -> <你的 host gid>     (size 1)
 对于 proot，这一切通常靠 ptrace 逐条拦截并改写路径——goroot 让内核原生完成，
 因此没有解释执行的开销，行为也更接近真实容器。
 
+## 兼容性与优雅降级
+
+`goroot` 不假设所有命名空间都存在。启动前它用 `clone(2)` 逐个**探测**能力
+（注意：不能在 Go 进程内直接 `unshare()`——Go 是多线程的，内核会拒绝；必须像
+真正的容器一样通过 `fork+exec` 探测），然后按优先级逐项降级，并在 stderr 给出
+警告，而不是一刀切地硬失败。
+
+```sh
+goroot doctor   # 打印本机支持情况与将发生的降级
+```
+
+```
+kernel          : 7.0.10-1-liquorix-amd64 (x86_64)
+euid            : 1000 (unprivileged)
+namespaces      :
+  user   ok
+  mount  ok
+  pid    ok
+  uts    ok
+  ipc    ok
+  net    ok
+verdict         :
+  can run: full isolation
+```
+
+| 能力 | 最低内核 | 缺失时的降级行为 |
+| --- | --- | --- |
+| user namespace | 3.8（且发行版未禁用） | 非 root：直接报错并给出指引；root：跳过，改为完整的真实 root 容器 |
+| mount ns + pivot_root | 2.6.x | 必需（缺失无法做成容器） |
+| pid namespace | 2.6.24 | 关闭，改为 bind 主机 `/proc` |
+| uts / ipc / net ns | 2.6.19 / 3.0 / 2.6.24 | 逐项关闭并警告（不再改主机 hostname / 不碰主机 lo） |
+| userns 内挂 procfs | 3.8 | 回退为 bind 主机 `/proc` |
+| userns 内挂 sysfs | 3.8~4.x | 回退为只读 bind 主机 `/sys`；`--share-net` 下只能 bind 主机 `/sys` |
+| devpts `newinstance` | 4.7 | 回退为 bind 主机 `/dev/pts` |
+| 在 userns/tmpfs 建普通文件 | 3.8 | 必需（`/dev` 设备节点用 bind 而非 `mknod`） |
+
+关键安全点：当某个命名空间探测失败被降级时，会同步更新传给子进程的标志，避免
+副作用落到主机上——例如 UTS 不可用就**不**调用 `sethostname`（否则会改到主机
+hostname），网络命名空间不可用就**不**去拉起主机的 `lo`。
+
+如果内核太老、且既没有 user namespace 又没有 root 权限，则任何「真」隔离都无从
+谈起——这正是 proot 存在的理由（用 ptrace 在用户态伪造）。此时 `goroot` 会明确
+提示你去启用 userns 或改用 proot/bwrap，而不是给出一个晦涩的 `EPERM`。
+
+调试/强制降级：设置 `GOROOT_DISABLE_NS=pid,uts,net`（逗号分隔）可让 `goroot` 假装
+这些命名空间不可用，用于验证降级路径。
+
 ## 限制与已知问题
 
 - **单 uid 映射**：无特权 user namespace 只能把「当前用户 ↔ 容器 root」做一对一
@@ -145,7 +195,8 @@ ROOTFS=./myrootfs ./scripts/smoke.sh   # 复用已有 rootfs
 | --- | --- |
 | `main.go` | CLI 解析与命令分发 |
 | `spec.go` | 容器描述结构（JSON 传给子进程） |
-| `run.go` | 父进程侧：命名空间/flags/uid 映射/启动 |
+| `run.go` | 父进程侧：能力探测、降级、flags/uid 映射、启动 |
+| `probe_linux.go` | 命名空间能力探测、`doctor` 自检 |
 | `init_linux.go` | 子进程侧：挂载、pivot_root、exec、微型 init |
 | `net_linux.go` | 拉起 lo、终端检测 |
 | `extract.go` | tar 解包（本地/URL） |

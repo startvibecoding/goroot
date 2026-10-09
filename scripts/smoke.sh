@@ -57,6 +57,16 @@ check "cwd set" "/tmp" "$($BIN run -r "$ROOTFS" -w /tmp -- pwd)"
 echo "==> init mode reaps & propagates"
 check "init exit code" "7" "$($BIN run -r "$ROOTFS" --init -- /bin/sh -c 'exit 7'; echo $?)"
 
+echo "==> doctor & degradation"
+$BIN doctor >/dev/null 2>&1 && ok "doctor runs" || bad "doctor"
+out=$(GOROOT_DISABLE_NS=uts $BIN run -r "$ROOTFS" -- hostname 2>/dev/null)
+check "uts disabled keeps host hostname" "$(hostname)" "$out"
+out=$(GOROOT_DISABLE_NS=pid $BIN run -r "$ROOTFS" -- /bin/sh -c 'ls /proc|grep -cE "^[0-9]+$"' 2>/dev/null)
+[ "$out" -gt 20 ] && ok "pid disabled exposes host /proc ($out)" || bad "pid degradation"
+if [ "$(id -u)" != 0 ]; then
+  GOROOT_DISABLE_NS=user $BIN run -r "$ROOTFS" -- true >/dev/null 2>&1 && bad "should fail without userns" || ok "fails cleanly without userns"
+fi
+
 echo
 echo "passed=$pass failed=$fail"
 [ "$fail" -eq 0 ]
