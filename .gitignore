@@ -1,0 +1,7 @@
+# build artifacts
+/goroot
+# test/rootfs data
+/rootfs/
+*.tar.gz
+*.tar.xz
+*.tgz
