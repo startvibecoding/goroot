@@ -293,7 +293,7 @@ ROOTFS=./myrootfs ./scripts/smoke.sh   # 复用已有 rootfs
 `.github/workflows/ci.yml` 在每次推送和 PR 时构建并运行冒烟测试。
 
 `.github/workflows/release.yml` 由 **`v*` tag** 触发：交叉编译 Linux 二进制、创建
-GitHub Release 并发布 npm 包（`goroot-installer`；安装后的命令名仍是 `goroot`）。
+GitHub Release 并把 npm 包发布到 **GitHub Packages** registry。
 
 ```sh
 git tag v0.1.0 && git push origin v0.1.0
@@ -303,11 +303,14 @@ git tag v0.1.0 && git push origin v0.1.0
 对应的裸二进制（npm 安装时下载）以及 `checksums.txt`。
 
 ```sh
-npm install -g goroot-installer   # 安装后命令为 goroot
+# GitHub Packages 即使安装也需要 token，先导出 GITHUB_TOKEN
+echo "@startvibecoding:registry=https://npm.pkg.github.com" >> ~/.npmrc
+echo "//npm.pkg.github.com/:_authToken=$GITHUB_TOKEN"        >> ~/.npmrc
+npm install -g @startvibecoding/goroot-installer   # 安装后命令为 goroot
 ```
 
-npm 发布使用仓库密钥 `NPM_TOKEN`（npm automation token）；未配置时 release 照常运行，
-npm 步骤会跳过并给出警告。
+发布使用内置的 `GITHUB_TOKEN`（`packages: write`），无需额外 secret；版本已发布时会
+自动跳过。
 
 代码结构：
 

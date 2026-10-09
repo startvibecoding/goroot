@@ -225,11 +225,13 @@ Gotchas:
 - `scripts/build-release.sh` cross-compiles `linux/{amd64,arm64}` with
   `-X main.version=<tag>` (so `version` in `main.go` must stay a `var`), emits
   `goroot_<ver>_linux_<arch>` raw binaries + `.tar.gz` + `checksums.txt`.
-- `npm/goroot-installer/` is the published package (name `goroot-installer`, but
-  the installed bin/command is `goroot`). `postinstall.js` downloads the matching
-  raw binary from the release into `vendor/goroot`; `bin/goroot.js` execs it. The
-  release job sets the version from the tag before `npm publish`. Publishing needs
-  the `NPM_TOKEN` secret; the step no-ops with a warning when it is absent.
+- `npm/goroot-installer/` is the published package: **`@startvibecoding/goroot-installer`**
+  on the **GitHub Packages** npm registry (`npm.pkg.github.com`; the scope must
+  equal the repo owner). The installed bin/command is still `goroot`.
+  `postinstall.js` downloads the matching raw binary from the release into
+  `vendor/goroot`; `bin/goroot.js` execs it. The release job sets the version from
+  the tag, then publishes with the built-in `GITHUB_TOKEN` (`packages: write`) —
+  no extra secret — and skips a version that is already published.
 - Bump the version by tagging (`git tag v0.1.0 && git push origin v0.1.0`); it is
   injected at build time, do not hand-edit `main.go`'s `version` for releases.
 

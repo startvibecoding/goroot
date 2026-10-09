@@ -1,10 +1,17 @@
-# goroot (npm)
+# @startvibecoding/goroot-installer
 
 Installs the [`goroot`](https://github.com/startvibecoding/goroot) CLI — a
 rootless, lightweight, single-process container runtime written in Go.
 
+Published to the **GitHub Packages** npm registry (not npmjs.org).
+
 ```sh
-npm install -g goroot-installer
+# One-time: point the scope at GitHub Packages and authenticate.
+# Your token needs at least read:packages.
+echo "@startvibecoding:registry=https://npm.pkg.github.com" >> ~/.npmrc
+echo "//npm.pkg.github.com/:_authToken=$GITHUB_TOKEN"        >> ~/.npmrc
+
+npm install -g @startvibecoding/goroot-installer
 goroot run -- /bin/sh        # drops into a shell in the built-in Alpine rootfs
 ```
 
