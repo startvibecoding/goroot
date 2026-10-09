@@ -12,7 +12,7 @@ const exe = path.join(__dirname, '..', 'vendor', 'goroot');
 if (!fs.existsSync(exe)) {
   console.error(`goroot: binary not found at ${exe}`);
   console.error('goroot: the postinstall step may have been skipped or failed.');
-  console.error('goroot: reinstall with   npm i -g goroot');
+  console.error('goroot: reinstall with   npm i -g goroot-installer');
   console.error('goroot: or download a release from https://github.com/startvibecoding/goroot/releases');
   process.exit(1);
 }

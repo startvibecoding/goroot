@@ -1,5 +1,5 @@
 {
-  "name": "goroot",
+  "name": "goroot-installer",
   "version": "0.0.0",
   "description": "Rootless, lightweight container sandbox in Go (user-namespace based)",
   "keywords": [

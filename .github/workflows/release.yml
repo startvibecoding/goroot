@@ -96,7 +96,7 @@ jobs:
           VERSION: ${{ needs.build.outputs.version }}
         run: |
           set -euo pipefail
-          cd npm/goroot
+          cd npm/goroot-installer
           npm version "$VERSION" --no-git-tag-version --allow-same-version
           if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
             echo "::warning::NPM_TOKEN is not configured; skipping npm publish."

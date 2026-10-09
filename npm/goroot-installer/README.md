@@ -4,7 +4,7 @@ Installs the [`goroot`](https://github.com/startvibecoding/goroot) CLI — a
 rootless, lightweight, single-process container runtime written in Go.
 
 ```sh
-npm install -g goroot
+npm install -g goroot-installer
 goroot run -- /bin/sh        # drops into a shell in the built-in Alpine rootfs
 ```
 

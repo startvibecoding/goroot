@@ -334,7 +334,8 @@ ROOTFS=./myrootfs ./scripts/smoke.sh   # reuse an existing rootfs
 request.
 
 `.github/workflows/release.yml` triggers on **`v*` tags**: it cross-compiles
-Linux binaries, creates the GitHub Release and publishes the npm package.
+Linux binaries, creates the GitHub Release and publishes the npm package
+(`goroot-installer`; the installed command is `goroot`).
 
 ```sh
 git tag v0.1.0 && git push origin v0.1.0
@@ -343,6 +344,10 @@ git tag v0.1.0 && git push origin v0.1.0
 Artifacts (also buildable locally with `make dist`):
 `goroot_<ver>_linux_{amd64,arm64}.tar.gz`, matching raw binaries (downloaded by
 the npm package on install) and `checksums.txt`.
+
+```sh
+npm install -g goroot-installer   # installs the `goroot` command
+```
 
 npm publishing uses the repository secret `NPM_TOKEN` (an npm automation token);
 if it is not set the release still runs and the npm job is skipped with a warning.

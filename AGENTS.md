@@ -225,7 +225,8 @@ Gotchas:
 - `scripts/build-release.sh` cross-compiles `linux/{amd64,arm64}` with
   `-X main.version=<tag>` (so `version` in `main.go` must stay a `var`), emits
   `goroot_<ver>_linux_<arch>` raw binaries + `.tar.gz` + `checksums.txt`.
-- `npm/goroot/` is the published package. `postinstall.js` downloads the matching
+- `npm/goroot-installer/` is the published package (name `goroot-installer`, but
+  the installed bin/command is `goroot`). `postinstall.js` downloads the matching
   raw binary from the release into `vendor/goroot`; `bin/goroot.js` execs it. The
   release job sets the version from the tag before `npm publish`. Publishing needs
   the `NPM_TOKEN` secret; the step no-ops with a warning when it is absent.
