@@ -51,6 +51,9 @@ child via the **`GOROOT_SPEC`** environment variable. Namespaces are created by
 | `net_linux.go` | bring up `lo`, `isTerminal` |
 | `extract.go` | tar/.gz/.bz2 unpacking (local file or http(s) URL) |
 | `assets.go` | embedded default rootfs (`assets/*.tar.gz`) + cache extraction |
+| `protocol.go` | daemon wire protocol (op run/ps/logs/stop/rm/status/shutdown) + `~/.goroot` paths |
+| `daemon.go` | `server`: task manager, unix-socket listener, log streaming |
+| `client.go` | `client` subcommands (run/ps/logs/stop/rm/status/shutdown) |
 
 ## Critical invariants — do not break these
 
@@ -125,6 +128,32 @@ binary with `go:embed` (see `assets.go`). When `run` is called without `-r/--roo
 - **Auto shell**: with no command, `pickDefaultShell` (init_linux.go) picks the
   first available of `/bin/sh`, `/bin/bash`, `/bin/zsh`, `/bin/fish` (both `/bin`
   and `/usr/bin`). It runs after `pivot_root`, so it inspects the *container*.
+
+## Daemon (`server` / `client`)
+
+A pair of subcommands for running detached background tasks:
+
+- `goroot server` listens on a unix socket at `~/.goroot/goroot.sock` (dir 0700,
+  socket 0600). `-d/--daemon` re-execs a detached copy (Setsid) logging to
+  `~/.goroot/server.log`.
+- `goroot client <run|ps|logs|stop|rm|status|shutdown>` speaks a
+  newline-delimited JSON protocol (`protocol.go`). The client **auto-starts** the
+  daemon on connection failure (disable with `GOROOT_NO_AUTOSTART=1`).
+- Tasks are launched by the daemon via `buildContainerCmd` with **stdio redirected
+  to `~/.goroot/logs/<id>.log`** and no tty, and force `Spec.UseInit = true` so a
+  `stop` (SIGTERM) is graceful and orphaned children are reaped. Logs are streamed
+  over the socket (`op=logs`, `Follow` follows until the task exits).
+- State is **in-memory only**; if the daemon dies its tasks die (Pdeathsig) and the
+  list is lost.
+
+Gotchas:
+- **Never let the daemon inherit stray fds.** The invoking tool may hold a control
+  pipe on an fd > 2; a long-lived daemon that inherits it makes the caller block on
+  EOF forever. `startDaemon` calls `setCloexecOnStrayFds()` before `Start` for this
+  reason. Keep that.
+- When testing by hand, **do not** use `pkill -f 'goroot server'`: the pattern also
+  matches the shell running your script and kills it (looks like a hang). Use the
+  `[g]oroot` bracket trick or match the real cmdline `/proc/self/exe server`.
 
 ## Conventions
 

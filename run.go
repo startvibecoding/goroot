@@ -12,15 +12,14 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// runParent is executed in the CLI process. It decides which namespaces this
-// kernel/environment can actually provide, degrades gracefully, then
-// re-executes itself as the hidden "__init" stage inside them.
-func runParent(spec *Spec) int {
+// prepareSpec resolves the rootfs (falling back to the embedded Alpine) and
+// applies default behaviors shared by `run` and the daemon.
+func prepareSpec(spec *Spec) error {
 	// No -r/--root: fall back to the Alpine minirootfs embedded in the binary.
 	if spec.Rootfs == "" {
 		dir, err := ensureEmbeddedRootfs()
 		if err != nil {
-			fatal("prepare built-in rootfs: %v", err)
+			return fmt.Errorf("prepare built-in rootfs: %w", err)
 		}
 		info("using built-in Alpine minirootfs (cache: %s)", dir)
 		spec.Rootfs = dir
@@ -28,11 +27,11 @@ func runParent(spec *Spec) int {
 
 	abs, err := filepath.Abs(spec.Rootfs)
 	if err != nil {
-		fatal("resolve rootfs: %v", err)
+		return fmt.Errorf("resolve rootfs: %w", err)
 	}
 	spec.Rootfs = abs
 	if st, err := os.Stat(abs); err != nil || !st.IsDir() {
-		fatal("rootfs %q is not a directory (extract one first, e.g. `goroot extract alpine.tar.gz rootfs`)", spec.Rootfs)
+		return fmt.Errorf("rootfs %q is not a directory (extract one first, e.g. `goroot extract alpine.tar.gz rootfs`)", spec.Rootfs)
 	}
 	spec.HostUID = os.Getuid()
 	spec.HostGID = os.Getgid()
@@ -41,7 +40,13 @@ func runParent(spec *Spec) int {
 	// container so DNS works out of the box (unless the user overrode it or
 	// opted out).
 	addDefaultResolv(spec)
+	return nil
+}
 
+// buildContainerCmd probes kernel capabilities, degrades gracefully and returns
+// an unstarted command that re-executes us as the hidden "__init" stage inside
+// the chosen namespaces, wired to the given stdio.
+func buildContainerCmd(spec *Spec, stdin *os.File, stdout, stderr *os.File, tty bool) (*exec.Cmd, error) {
 	realRoot := os.Geteuid() == 0
 
 	// --- Capability probing & graceful degradation -----------------------
@@ -50,9 +55,9 @@ func runParent(spec *Spec) int {
 	// actionable message instead of failing deep inside the child.
 	haveUser := probeNS("user", false)
 	if !realRoot && !haveUser {
-		fatal("user namespaces are unavailable and you are not root.\n" +
+		return nil, errors.New("user namespaces are unavailable and you are not root.\n" +
 			"  Enable them:  sudo sysctl -w kernel.unprivileged_userns_clone=1\n" +
-			"  Or use proot/bwrap, which fake the rootfs in userspace.")
+			"  Or use proot/bwrap, which fake the rootfs in userspace")
 	}
 
 	// Non-root must use a userns. Root gets full access without one (and
@@ -62,23 +67,19 @@ func runParent(spec *Spec) int {
 		spec.NoUser = true
 	}
 
-	uts := !spec.NoUTS && probeNS("uts", !realRoot)
-	if !spec.NoUTS && !uts {
+	if !spec.NoUTS && !probeNS("uts", !realRoot) {
 		warn("UTS namespace unavailable; keeping the host hostname")
 		spec.NoUTS = true
 	}
-	ipc := !spec.NoIPC && probeNS("ipc", !realRoot)
-	if !spec.NoIPC && !ipc {
+	if !spec.NoIPC && !probeNS("ipc", !realRoot) {
 		warn("IPC namespace unavailable; continuing without it")
 		spec.NoIPC = true
 	}
-	pid := !spec.NoPID && probeNS("pid", !realRoot)
-	if !spec.NoPID && !pid {
+	if !spec.NoPID && !probeNS("pid", !realRoot) {
 		warn("PID namespace unavailable; the host /proc will be visible")
 		spec.NoPID = true
 	}
-	net := !spec.ShareNet && probeNS("net", !realRoot)
-	if !spec.ShareNet && !net {
+	if !spec.ShareNet && !probeNS("net", !realRoot) {
 		warn("network namespace unavailable; sharing the host network")
 		spec.ShareNet = true
 	}
@@ -120,7 +121,6 @@ func runParent(spec *Spec) int {
 	// owned tty as the controlling terminal of a brand new session fails
 	// with EPERM, so we stay in the parent's session and just take the
 	// foreground.
-	tty := isTerminal(os.Stdin.Fd())
 	if tty {
 		attr.Setpgid = true
 		attr.Foreground = true
@@ -128,11 +128,26 @@ func runParent(spec *Spec) int {
 	}
 
 	cmd := exec.Command(selfPath(), "__init")
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	cmd.Stdin = stdin
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 	cmd.Env = append(os.Environ(), "GOROOT_SPEC="+marshalSpec(spec))
 	cmd.SysProcAttr = attr
+	return cmd, nil
+}
+
+// runParent implements the foreground `run` command: start one container
+// attached to the current terminal and wait for it.
+func runParent(spec *Spec) int {
+	if err := prepareSpec(spec); err != nil {
+		fatal("%v", err)
+	}
+
+	tty := isTerminal(os.Stdin.Fd())
+	cmd, err := buildContainerCmd(spec, os.Stdin, os.Stdout, os.Stderr, tty)
+	if err != nil {
+		fatal("%v", err)
+	}
 
 	if err := cmd.Start(); err != nil {
 		if errors.Is(err, syscall.EPERM) || errors.Is(err, syscall.EINVAL) {
@@ -155,7 +170,12 @@ func runParent(spec *Spec) int {
 		}()
 	}
 
-	err = cmd.Wait()
+	return waitExitCode(cmd)
+}
+
+// waitExitCode waits for cmd and maps its result to a process exit code.
+func waitExitCode(cmd *exec.Cmd) int {
+	err := cmd.Wait()
 	if err == nil {
 		return 0
 	}
@@ -177,6 +197,10 @@ func warn(format string, a ...any) {
 	fmt.Fprintf(os.Stderr, "goroot: warning: "+format+"\n", a...)
 }
 
+func info(format string, a ...any) {
+	fmt.Fprintf(os.Stderr, "goroot: "+format+"\n", a...)
+}
+
 // addDefaultResolv binds the host's /etc/resolv.conf read-only into the
 // container unless the user disabled it or already mounted something there.
 func addDefaultResolv(spec *Spec) {
@@ -196,8 +220,4 @@ func addDefaultResolv(spec *Spec) {
 		}
 	}
 	spec.Binds = append(spec.Binds, Bind{Src: "/etc/resolv.conf", Dst: "/etc/resolv.conf", RO: true})
-}
-
-func info(format string, a ...any) {
-	fmt.Fprintf(os.Stderr, "goroot: "+format+"\n", a...)
 }

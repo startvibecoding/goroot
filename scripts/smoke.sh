@@ -78,5 +78,18 @@ if [ "$(id -u)" != 0 ]; then
 fi
 
 echo
+
+echo "==> daemon (server/client)"
+if timeout 10 $BIN client status >/dev/null 2>&1; then
+  did=$(timeout 10 $BIN client run -- /bin/sh -c 'echo daemon-hello' 2>/dev/null)
+  [ -n "$did" ] && ok "client run returned id ($did)" || bad "client run"
+  sleep 1
+  check "client logs" "daemon-hello" "$(timeout 10 $BIN client logs "$did" 2>/dev/null)"
+  timeout 10 $BIN client ps >/dev/null 2>&1 && ok "client ps" || bad "client ps"
+  timeout 10 $BIN client rm "$did" >/dev/null 2>&1 && ok "client rm" || bad "client rm"
+  timeout 10 $BIN client shutdown >/dev/null 2>&1 && ok "client shutdown" || bad "client shutdown"
+else
+  bad "daemon/client unusable"
+fi
 echo "passed=$pass failed=$fail"
 [ "$fail" -eq 0 ]

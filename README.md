@@ -27,8 +27,10 @@ uid=0(root) gid=0(root) groups=65534(nobody),0(root)
   inside the container.
 - **Real isolation** — user / mount / pid / uts / ipc / net namespaces (each can be
   turned off individually).
+- **Background tasks** — a `server`/`client` daemon pair (unix socket under
+  `~/.goroot`) runs detached containers and can stream their logs.
 - **Single process** — by default the target command is `exec`'d as PID 1 of the
-  container; there is no daemon.
+  container; there is no per-container supervisor.
 - **Complete mount view** — `/proc`, read-only `/sys`, `/dev` (device nodes,
   `/dev/pts`, `/dev/shm`) and `/tmp`.
 - **pivot_root** to switch the root filesystem (falls back to `chroot`).
@@ -119,6 +121,8 @@ the default) to force sharing.
 ```
 goroot run [options] [--] <command> [args...]
 goroot extract [-c N] <tarball|url> <dest>
+goroot server [-d|--daemon]
+goroot client <subcommand>       # run | ps | logs | stop | rm | status | shutdown
 goroot doctor
 goroot version
 ```
@@ -173,6 +177,30 @@ namespaces:
 proot normally does all of this by intercepting every syscall with ptrace and
 rewriting paths. goroot lets the kernel do it natively, so there is no
 interpreter overhead and behaviour is much closer to a real container.
+
+## Background tasks (daemon)
+
+`goroot server` runs a small daemon (listening on `~/.goroot/goroot.sock`) that can
+launch **detached** containers; `goroot client` talks to it. The daemon is started
+automatically the first time a client needs it (set `GOROOT_NO_AUTOSTART=1` to
+forbid that).
+
+```sh
+goroot server -d                          # start the daemon in the background
+goroot client status                      # is it up?
+
+id=$(goroot client run -- /bin/sh -c 'while :; do date; sleep 5; done')
+goroot client ps                          # list tasks
+goroot client logs -f $id                 # follow the task's logs
+goroot client stop $id                    # SIGTERM, escalating to SIGKILL
+goroot client rm $id                      # drop a finished task
+goroot client shutdown                    # stop the daemon and its tasks
+```
+
+`client run` accepts the same options as `run`. Detached tasks are launched with
+the tiny init as PID 1, so `stop` delivers a graceful SIGTERM (exit code 143) and
+orphaned children are reaped. Task state is in-memory: if the daemon stops, its
+tasks are killed and the list is lost. Logs live in `~/.goroot/logs/<id>.log`.
 
 ## Compatibility & graceful degradation
 
@@ -263,3 +291,6 @@ Code layout:
 | `net_linux.go` | bring up `lo`, terminal detection |
 | `extract.go` | tar unpacking (local/URL) |
 | `assets.go` | embedded default rootfs (`assets/*.tar.gz`), cache extraction |
+| `protocol.go` | daemon wire protocol + `~/.goroot` path helpers |
+| `daemon.go` | `server`: task manager, unix-socket listener, log streaming |
+| `client.go` | `client`: run/ps/logs/stop/rm/status/shutdown |

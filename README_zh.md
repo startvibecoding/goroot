@@ -21,7 +21,9 @@ uid=0(root) gid=0(root) groups=65534(nobody),0(root)
   shell，所以 `goroot run` 直接可用（`apk`/`curl` 开箱能跑）。
 - **无需 root**：靠 unprivileged user namespace 把当前用户映射成容器内的 root。
 - **真正的隔离**：user / mount / pid / uts / ipc / net 六个命名空间（可单独关闭）。
-- **单进程**：默认直接把目标命令 exec 成容器内的 PID 1，无守护进程。
+- **后台任务**：一对 `server`/`client` 守护进程子命令（`~/.goroot` 下的 unix socket），
+  以分离方式运行容器并管理日志。
+- **单进程**：默认直接把目标命令 exec 成容器内的 PID 1，每个容器无额外守护进程。
 - **完整挂载视图**：`/proc`、只读 `/sys`、`/dev`（含设备节点、`/dev/pts`、
   `/dev/shm`）、`/tmp`。
 - **pivot_root** 切换根文件系统（失败时回退 chroot）。
@@ -98,6 +100,8 @@ make install        # 安装到 /usr/local/bin
 ```
 goroot run [options] [--] <command> [args...]
 goroot extract [-c N] <tarball|url> <dest>
+goroot server [-d|--daemon]
+goroot client <子命令>       # run | ps | logs | stop | rm | status | shutdown
 goroot doctor
 goroot version
 ```
@@ -147,6 +151,28 @@ gid_map: 0 -> <你的 host gid>     (size 1)
 
 对于 proot，这一切通常靠 ptrace 逐条拦截并改写路径——goroot 让内核原生完成，
 因此没有解释执行的开销，行为也更接近真实容器。
+
+## 后台任务（守护进程）
+
+`goroot server` 运行一个小守护进程（监听 `~/.goroot/goroot.sock`），可以启动
+**分离式**（detached）容器；`goroot client` 与它通讯。客户端首次需要时会自动拉起
+守护进程（设置 `GOROOT_NO_AUTOSTART=1` 可禁用自动拉起）。
+
+```sh
+goroot server -d                          # 后台启动守护进程
+goroot client status                      # 查看是否在运行
+
+id=$(goroot client run -- /bin/sh -c 'while :; do date; sleep 5; done')
+goroot client ps                          # 列出任务
+goroot client logs -f $id                 # 跟踪日志
+goroot client stop $id                    # 先 SIGTERM，必要时升级为 SIGKILL
+goroot client rm $id                      # 删除已完成任务
+goroot client shutdown                    # 关闭守护进程及其所有任务
+```
+
+`client run` 支持与 `run` 相同的全部选项。分离任务的 PID 1 是微型 init，因此
+`stop` 是优雅的 SIGTERM（退出码 143），孤儿进程也会被回收。任务状态在内存中：
+守护进程停止后其任务会被杀掉且列表丢失。日志位于 `~/.goroot/logs/<id>.log`。
 
 ## 兼容性与优雅降级
 
@@ -228,3 +254,6 @@ ROOTFS=./myrootfs ./scripts/smoke.sh   # 复用已有 rootfs
 | `net_linux.go` | 拉起 lo、终端检测 |
 | `extract.go` | tar 解包（本地/URL） |
 | `assets.go` | 内置默认 rootfs（`assets/*.tar.gz`）、缓存解包 |
+| `protocol.go` | 守护进程通讯协议 + `~/.goroot` 路径辅助 |
+| `daemon.go` | `server`：任务管理、unix socket 监听、日志流式输出 |
+| `client.go` | `client`：run/ps/logs/stop/rm/status/shutdown |

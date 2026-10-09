@@ -29,6 +29,10 @@ func main() {
 		os.Exit(cmdExtract(args[1:]))
 	case "doctor", "check":
 		os.Exit(cmdDoctor(args[1:]))
+	case "server", "daemon":
+		os.Exit(cmdServer(args[1:]))
+	case "client":
+		os.Exit(cmdClient(args[1:]))
 	case "version", "-v", "--version":
 		fmt.Printf("goroot %s\n", version)
 		os.Exit(0)
@@ -48,6 +52,8 @@ func usage() {
 Usage:
   goroot run [options] [--] <command> [args...]
   goroot extract [-c N] <tarball|url> <dest>
+  goroot server [-d|--daemon]      start the background task daemon
+  goroot client <subcommand>       talk to the daemon (run/ps/logs/stop/rm/status/shutdown)
   goroot doctor
   goroot version
 
@@ -86,6 +92,11 @@ Notes:
 }
 
 func cmdRun(args []string) int {
+	return runParent(buildRunSpec(args))
+}
+
+// buildRunSpec parses the options shared by `goroot run` and `goroot client run`.
+func buildRunSpec(args []string) *Spec {
 	spec := &Spec{
 		Rootfs:   "", // empty => use the built-in Alpine rootfs
 		Hostname: "goroot",
@@ -163,7 +174,7 @@ func cmdRun(args []string) int {
 			spec.GID = atoiOr(next(), a)
 		case "-h", "--help":
 			usage()
-			return 0
+			os.Exit(0)
 		default:
 			fatal("run: unknown flag %q", a)
 		}
@@ -171,7 +182,7 @@ func cmdRun(args []string) int {
 
 	spec.Binds = binds
 	spec.Argv = cmdArgs
-	return runParent(spec)
+	return spec
 }
 
 func parseBind(s string, forceRO bool) Bind {
