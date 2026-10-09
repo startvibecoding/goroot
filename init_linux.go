@@ -329,7 +329,7 @@ func pivotRoot(root string) error {
 // final argv/env for the target process.
 func buildExec(spec *Spec) (string, []string, []string, error) {
 	if len(spec.Argv) == 0 {
-		spec.Argv = []string{"/bin/sh"}
+		spec.Argv = []string{pickDefaultShell()}
 	}
 
 	env := buildEnv(spec)
@@ -350,6 +350,26 @@ func buildExec(spec *Spec) (string, []string, []string, error) {
 		argv0 = resolved
 	}
 	return argv0, spec.Argv, env, nil
+}
+
+// shellCandidates lists the shells we look for, in priority order, as a default
+// command when the user does not specify one.
+var shellCandidates = []string{
+	"/bin/sh", "/usr/bin/sh",
+	"/bin/bash", "/usr/bin/bash",
+	"/bin/zsh", "/usr/bin/zsh",
+	"/bin/fish", "/usr/bin/fish",
+}
+
+// pickDefaultShell returns the first available shell inside the container
+// (this runs after pivot_root, so the paths are the container's).
+func pickDefaultShell() string {
+	for _, sh := range shellCandidates {
+		if st, err := os.Stat(sh); err == nil && !st.IsDir() && st.Mode()&0o111 != 0 {
+			return sh
+		}
+	}
+	return "/bin/sh"
 }
 
 func lookPath(file, path string) (string, error) {

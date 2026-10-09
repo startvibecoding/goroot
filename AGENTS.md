@@ -111,6 +111,21 @@ binary with `go:embed` (see `assets.go`). When `run` is called without `-r/--roo
 - Keep the binary buildable offline: never make the build depend on downloading the
   rootfs.
 
+## Default UX (keep these defaults sane)
+
+`run` is tuned to work with zero flags. Do not regress these:
+
+- **Shared host network by default**: `cmdRun` sets `Spec.ShareNet = true`
+  (also `--share-net`); `--isolate-net` opts back into a private netns. Because
+  the default shares the host netns, a fresh `sysfs` cannot be mounted and the
+  `/sys` fallback (read-only bind of the host) kicks in — expected.
+- **Auto `/etc/resolv.conf`**: `addDefaultResolv` (run.go) appends a read-only bind
+  of the host resolver unless `--no-resolv` is set or the user already mounted
+  something at `/etc/resolv.conf`.
+- **Auto shell**: with no command, `pickDefaultShell` (init_linux.go) picks the
+  first available of `/bin/sh`, `/bin/bash`, `/bin/zsh`, `/bin/fish` (both `/bin`
+  and `/usr/bin`). It runs after `pivot_root`, so it inspects the *container*.
+
 ## Conventions
 
 - New run options: add a field to `Spec`, parse it in `cmdRun` (`main.go`), and use it

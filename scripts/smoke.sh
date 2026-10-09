@@ -24,6 +24,14 @@ echo "==> identity"
 check "uid is 0 inside" "0" "$($BIN run -r "$ROOTFS" -- /bin/sh -c 'id -u')"
 check "exit code propagates" "42" "$($BIN run -r "$ROOTFS" -- /bin/sh -c 'exit 42'; echo $?)"
 
+echo "==> default UX (net / resolv / shell)"
+if [ -s /etc/resolv.conf ]; then
+  check "host resolv.conf auto-bound" "$(cat /etc/resolv.conf)" "$($BIN run -r "$ROOTFS" -- cat /etc/resolv.conf 2>/dev/null)"
+fi
+check "default shares host net" "$(ls /sys/class/net | wc -l)" "$($BIN run -r "$ROOTFS" -- /bin/sh -c 'ls /sys/class/net | wc -l' 2>/dev/null)"
+check "isolate-net exposes only lo" "1" "$($BIN run -r "$ROOTFS" --isolate-net -- /bin/sh -c 'ls /sys/class/net | wc -l')"
+check "auto-selects a shell" "auto-ok" "$(echo 'echo auto-ok; exit' | $BIN run -r "$ROOTFS" 2>/dev/null)"
+
 check "built-in rootfs runs (no -r)" "embedded-ok" "$($BIN run -- /bin/sh -c 'echo embedded-ok' 2>/dev/null)"
 
 echo "==> pid namespace"

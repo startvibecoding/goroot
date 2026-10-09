@@ -20,6 +20,9 @@ uid=0(root) gid=0(root) groups=65534(nobody),0(root)
 
 - **Works out of the box** — an Alpine minirootfs is embedded in the binary and
   used when no `--root` is given.
+- **Sane defaults** — shares the host network, auto-binds the host
+  `/etc/resolv.conf` read-only and auto-selects a shell, so `goroot run` just works
+  (and `apk`/`curl` work immediately).
 - **No root required** — an unprivileged user namespace maps your user to root
   inside the container.
 - **Real isolation** — user / mount / pid / uts / ipc / net namespaces (each can be
@@ -70,14 +73,23 @@ in `assets/` and update the constants in `assets.go`.
 
 ## Quick start
 
-A minimal Alpine rootfs is embedded in the binary, so you can start immediately:
+A minimal Alpine rootfs is embedded in the binary, so you can start immediately —
+with no arguments you drop straight into a shell:
 
 ```sh
-./goroot run -- /bin/sh        # uses the built-in Alpine minirootfs
+./goroot run -- /bin/sh        # or just: ./goroot run
 ```
 
-On first use it is unpacked to `~/.cache/goroot/alpine-3.20.0-x86_64` and reused
-from then on. To use your own rootfs instead, pass `-r DIR`:
+By default the container shares the host network and the host resolver is
+available, so this works out of the box:
+
+```sh
+./goroot run -- /bin/sh -c 'apk add --no-cache curl && curl -s https://example.com | head -1'
+```
+
+On first use the built-in rootfs is unpacked to
+`~/.cache/goroot/alpine-3.20.0-x86_64` and reused from then on. To use your own
+rootfs instead, pass `-r DIR`:
 
 ```sh
 # unpack a rootfs you downloaded (no root; files end up owned by you)
@@ -88,16 +100,19 @@ from then on. To use your own rootfs instead, pass `-r DIR`:
 ./goroot run -r rootfs -- /bin/sh
 ```
 
-### Networking inside the container
+### Networking
 
-By default the container gets an **isolated network namespace** (only `lo`). To
-share the host network:
+By default the container **shares the host network** and the host's
+`/etc/resolv.conf` is bind-mounted read-only, so package managers and `curl` work
+with no extra flags:
 
 ```sh
-./goroot run -r rootfs --share-net \
-  -b /etc/resolv.conf:/etc/resolv.conf:ro \
-  -- /bin/sh -c 'apk add --no-cache curl && curl -s https://example.com | head -1'
+./goroot run -r rootfs -- /bin/sh -c 'apk add --no-cache curl && curl -s https://example.com | head -1'
 ```
+
+For a private network namespace (only `lo`), pass `--isolate-net`. Use
+`--no-resolv` to stop binding the host resolver, and `--share-net` (redundant with
+the default) to force sharing.
 
 ## Usage
 
@@ -119,13 +134,19 @@ goroot version
 | `--tmpfs DST` | mount a tmpfs at DST (repeatable) |
 | `-e, --env KEY=VAL` | set an environment variable (repeatable) |
 | `-w, --cwd DIR` | working directory inside the container (default `/`) |
-| `--share-net` | share the host network namespace |
+| `--share-net` | share the host network namespace (default) |
+| `--isolate-net` | use a private network namespace (only `lo`) |
+| `--no-resolv` | do not auto-bind the host `/etc/resolv.conf` |
 | `--no-pid` / `--no-ipc` / `--no-uts` | do not create that namespace |
 | `-u, --uid N` / `-g, --gid N` | run as that identity inside (see limitations) |
 | `--init` | run a tiny init as PID 1 (reaps zombies, forwards signals) |
 | `--keep-env` | keep the host environment variables |
 
 `extract` options: `-c N` / `--strip N` removes N leading path components.
+
+Defaults: `--root` = built-in Alpine minirootfs, shared host network, host
+`/etc/resolv.conf` bound read-only, and a shell auto-selected from
+`/bin/sh`, `/bin/bash`, `/bin/zsh`, `/bin/fish` (in that order).
 
 ## How it works
 

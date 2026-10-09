@@ -59,7 +59,9 @@ run options:
       --tmpfs DST             mount a tmpfs at DST (repeatable)
   -e, --env KEY=VAL     set an environment variable (repeatable)
   -w, --cwd DIR         working directory inside the container (default: /)
-      --share-net       share the host network namespace
+      --share-net       share the host network namespace (default)
+      --isolate-net     use a private network namespace (only lo)
+      --no-resolv       do not auto-bind the host /etc/resolv.conf
       --no-pid          do not create a PID namespace
       --no-ipc          do not create an IPC namespace
       --no-uts          do not create a UTS namespace
@@ -88,6 +90,7 @@ func cmdRun(args []string) int {
 		Rootfs:   "", // empty => use the built-in Alpine rootfs
 		Hostname: "goroot",
 		Cwd:      "/",
+		ShareNet: true, // share the host network by default
 	}
 
 	binds := []Bind{}
@@ -140,6 +143,10 @@ func cmdRun(args []string) int {
 			spec.Cwd = next()
 		case "--share-net":
 			spec.ShareNet = true
+		case "--isolate-net":
+			spec.ShareNet = false
+		case "--no-resolv", "--no-resolv-conf":
+			spec.NoResolv = true
 		case "--no-pid":
 			spec.NoPID = true
 		case "--no-ipc":

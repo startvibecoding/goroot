@@ -26,6 +26,7 @@ type Spec struct {
 	Cwd      string   `json:"cwd"`
 	Tmpfs    []string `json:"tmpfs"`
 	ShareNet bool     `json:"shareNet"`
+	NoResolv bool     `json:"noResolv"`
 	NoPID    bool     `json:"noPid"`
 	NoIPC    bool     `json:"noIpc"`
 	NoUTS    bool     `json:"noUts"`

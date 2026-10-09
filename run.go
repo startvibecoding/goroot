@@ -37,6 +37,11 @@ func runParent(spec *Spec) int {
 	spec.HostUID = os.Getuid()
 	spec.HostGID = os.Getgid()
 
+	// Default UX: make the host resolver available read-only inside the
+	// container so DNS works out of the box (unless the user overrode it or
+	// opted out).
+	addDefaultResolv(spec)
+
 	realRoot := os.Geteuid() == 0
 
 	// --- Capability probing & graceful degradation -----------------------
@@ -170,6 +175,27 @@ func runParent(spec *Spec) int {
 
 func warn(format string, a ...any) {
 	fmt.Fprintf(os.Stderr, "goroot: warning: "+format+"\n", a...)
+}
+
+// addDefaultResolv binds the host's /etc/resolv.conf read-only into the
+// container unless the user disabled it or already mounted something there.
+func addDefaultResolv(spec *Spec) {
+	if spec.NoResolv {
+		return
+	}
+	if _, err := os.Stat("/etc/resolv.conf"); err != nil {
+		return
+	}
+	for _, b := range spec.Binds {
+		dst := b.Dst
+		if dst == "" {
+			dst = b.Src
+		}
+		if dst == "/etc/resolv.conf" {
+			return
+		}
+	}
+	spec.Binds = append(spec.Binds, Bind{Src: "/etc/resolv.conf", Dst: "/etc/resolv.conf", RO: true})
 }
 
 func info(format string, a ...any) {

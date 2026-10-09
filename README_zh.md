@@ -17,6 +17,8 @@ uid=0(root) gid=0(root) groups=65534(nobody),0(root)
 ## 特性
 
 - **开箱即用**：二进制内置一个 Alpine minirootfs，不传 `--root` 时直接使用。
+- **合理默认**：默认共享主机网络、只读挂载主机 `/etc/resolv.conf`、自动挑选
+  shell，所以 `goroot run` 直接可用（`apk`/`curl` 开箱能跑）。
 - **无需 root**：靠 unprivileged user namespace 把当前用户映射成容器内的 root。
 - **真正的隔离**：user / mount / pid / uts / ipc / net 六个命名空间（可单独关闭）。
 - **单进程**：默认直接把目标命令 exec 成容器内的 PID 1，无守护进程。
@@ -55,14 +57,20 @@ make install        # 安装到 /usr/local/bin
 
 ## 快速开始
 
-二进制内置了一个精简的 Alpine rootfs，所以可以立即启动：
+二进制内置了一个精简的 Alpine rootfs，可以立即启动 —— 不传参数会直接进入一个 shell：
 
 ```sh
-./goroot run -- /bin/sh        # 使用内置 Alpine minirootfs
+./goroot run -- /bin/sh        # 或直接：./goroot run
 ```
 
-首次使用会解包到 `~/.cache/goroot/alpine-3.20.0-x86_64`，之后复用。要用自己的
-rootfs，传 `-r DIR` 即可：
+默认共享主机网络、并可用主机 DNS 解析，所以下面这条开箱即用：
+
+```sh
+./goroot run -- /bin/sh -c 'apk add --no-cache curl && curl -s https://example.com | head -1'
+```
+
+首次使用会把内置 rootfs 解包到 `~/.cache/goroot/alpine-3.20.0-x86_64`，之后复用。
+要用自己的 rootfs，传 `-r DIR` 即可：
 
 ```sh
 # 解包一个你下载的 rootfs（不需要 root，文件归当前用户所有）
@@ -73,15 +81,17 @@ rootfs，传 `-r DIR` 即可：
 ./goroot run -r rootfs -- /bin/sh
 ```
 
-### 在容器里联网装包
+### 网络
 
-默认是**独立的 network namespace**（只有 lo）。要与主机共享网络：
+默认容器**共享主机网络**，且主机的 `/etc/resolv.conf` 以只读方式挂入，所以包管理
+器和 `curl` 无需额外参数即可工作：
 
 ```sh
-./goroot run -r rootfs --share-net \
-  -b /etc/resolv.conf:/etc/resolv.conf:ro \
-  -- /bin/sh -c 'apk add --no-cache curl && curl -s https://example.com | head -1'
+./goroot run -r rootfs -- /bin/sh -c 'apk add --no-cache curl && curl -s https://example.com | head -1'
 ```
+
+若需要独立的网络命名空间（只有 `lo`），传 `--isolate-net`。`--no-resolv` 可关闭
+主机 DNS 挂载，`--share-net`（与默认相同）可强制共享。
 
 ## 用法
 
@@ -103,13 +113,18 @@ goroot version
 | `--tmpfs DST` | 在 DST 挂载 tmpfs（可重复） |
 | `-e, --env KEY=VAL` | 设置环境变量（可重复） |
 | `-w, --cwd DIR` | 容器内工作目录（默认 `/`） |
-| `--share-net` | 与主机共享网络命名空间 |
+| `--share-net` | 与主机共享网络命名空间（默认） |
+| `--isolate-net` | 使用独立网络命名空间（只有 `lo`） |
+| `--no-resolv` | 不自动挂载主机 `/etc/resolv.conf` |
 | `--no-pid` / `--no-ipc` / `--no-uts` | 不创建对应命名空间 |
 | `-u, --uid N` / `-g, --gid N` | 容器内运行身份（见下方限制） |
 | `--init` | 以微型 init 作 PID 1（回收僵尸、转发信号） |
 | `--keep-env` | 保留主机环境变量 |
 
 `extract` 选项：`-c N` / `--strip N` 去掉 N 层路径前缀。
+
+默认值：`--root` = 内置 Alpine minirootfs；共享主机网络；主机 `/etc/resolv.conf`
+只读挂入；shell 按 `/bin/sh`、`/bin/bash`、`/bin/zsh`、`/bin/fish` 顺序自动选择。
 
 ## 工作原理
 
