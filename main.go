@@ -29,6 +29,8 @@ func main() {
 		os.Exit(cmdRun(args[1:]))
 	case "extract", "pull":
 		os.Exit(cmdExtract(args[1:]))
+	case "build":
+		os.Exit(cmdBuild(args[1:]))
 	case "doctor", "check":
 		os.Exit(cmdDoctor(args[1:]))
 	case "server", "daemon":
@@ -54,6 +56,7 @@ func usage() {
 Usage:
   goroot run [options] [--] <command> [args...]
   goroot extract [-c N] <tarball|url> <dest>
+  goroot build [-f Dockerfile] [context]
   goroot server [-d|--daemon]      start the background task daemon
   goroot client <subcommand>       talk to the daemon (run/ps/logs/stop/rm/status/shutdown)
   goroot doctor
@@ -88,6 +91,7 @@ Examples:
   goroot run -- /bin/sh                     # use the built-in Alpine rootfs
   goroot run -r myrootfs -- /bin/sh          # use your own rootfs
   goroot extract alpine-3.20.tar.gz rootfs   # unpack a custom rootfs
+  goroot build -t demo ./demo                # build a compatible Dockerfile
 
 Notes:
   * Files in the rootfs should be owned by your host user (extract as

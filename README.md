@@ -124,6 +124,7 @@ the default) to force sharing.
 ```
 goroot run [options] [--] <command> [args...]
 goroot extract [-c N] <tarball|url> <dest>
+goroot build [-f Dockerfile] [context]
 goroot server [-d|--daemon]
 goroot client <subcommand>       # run | ps | logs | stop | rm | status | shutdown
 goroot doctor
@@ -156,6 +157,28 @@ goroot version
 | `--keep-env` | keep the host environment variables |
 
 `extract` options: `-c N` / `--strip N` removes N leading path components.
+
+### Building compatible Dockerfiles
+
+`goroot build` materialises a local image directory containing `rootfs/` and
+`goroot-image.json`. It supports the common single-stage instructions `FROM`,
+`RUN`, `COPY`, `ADD`, `ENV`, `ARG`, `WORKDIR`, `USER`, `ENTRYPOINT`, `CMD`,
+`LABEL`, `VOLUME`, `EXPOSE`, `MAINTAINER`, `STOPSIGNAL`, `HEALTHCHECK`, and
+`SHELL`, plus `# syntax=` / `# escape=` directives. Variables are expanded in
+Docker style while `$(...)` remains available to `/bin/sh`.
+
+```sh
+goroot build -t demo ./demo
+goroot run -r ~/.goroot/images/demo
+```
+
+This is intentionally a rootless runtime-compatible subset, not an OCI registry
+client: `FROM` accepts `scratch`, a local rootfs directory, a previously built
+local image name/path, or `alpine[:tag]` using the embedded rootfs. Registry
+pulls/pushes, multi-stage builds, layer caching, and buildx features such as
+mounts/secrets are not implemented. `RUN` sees the build context read-only at
+`/build`; numeric `USER` values are preserved, while usernames and non-zero
+uids fail clearly in the rootless runtime because only uid/gid 0 is mapped.
 
 Defaults: `--root` = built-in Alpine minirootfs, shared host network, host
 `/etc/resolv.conf` bound read-only, and a shell auto-selected from

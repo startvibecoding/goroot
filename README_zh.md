@@ -102,6 +102,7 @@ make install        # 安装到 /usr/local/bin
 ```
 goroot run [options] [--] <command> [args...]
 goroot extract [-c N] <tarball|url> <dest>
+goroot build [-f Dockerfile] [context]
 goroot server [-d|--daemon]
 goroot client <子命令>       # run | ps | logs | stop | rm | status | shutdown
 goroot doctor
@@ -134,6 +135,25 @@ goroot version
 | `--keep-env` | 保留主机环境变量 |
 
 `extract` 选项：`-c N` / `--strip N` 去掉 N 层路径前缀。
+
+### 兼容 Dockerfile 构建
+
+`goroot build` 会生成本地镜像目录，其中包含 `rootfs/` 和 `goroot-image.json`。
+支持常见单阶段指令 `FROM`、`RUN`、`COPY`、`ADD`、`ENV`、`ARG`、`WORKDIR`、
+`USER`、`ENTRYPOINT`、`CMD`、`LABEL`、`VOLUME`、`EXPOSE`、`MAINTAINER`、
+`STOPSIGNAL`、`HEALTHCHECK`、`SHELL`，以及 `# syntax=` / `# escape=` parser
+directive。变量按 Docker 风格展开，`$(...)` 留给 `/bin/sh` 处理。
+
+```sh
+goroot build -t demo ./demo
+goroot run -r ~/.goroot/images/demo
+```
+
+这是面向 rootless 运行时的兼容子集，不是 OCI registry 客户端：`FROM` 接受
+`scratch`、本地 rootfs、已构建的本地镜像名称/路径，或使用内置 rootfs 的
+`alpine[:tag]`。尚未实现 registry pull/push、多阶段构建、层缓存及 mounts/secrets
+等 buildx 特性。`RUN` 会把构建上下文只读挂载到 `/build`；数值型 `USER` 会保留，用户名和非零
+uid 在 rootless 运行时会明确失败，因为 userns 只映射 uid/gid 0。
 
 默认值：`--root` = 内置 Alpine minirootfs；共享主机网络；主机 `/etc/resolv.conf`
 只读挂入；shell 按 `/bin/sh`、`/bin/bash`、`/bin/zsh`、`/bin/fish` 顺序自动选择。

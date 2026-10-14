@@ -101,6 +101,40 @@ fi
 
 echo
 
+echo "==> Dockerfile build"
+BUILD_CTX=/tmp/goroot_smoke_build
+BUILD_IMG=/tmp/goroot_smoke_build_image
+rm -rf "$BUILD_CTX" "$BUILD_IMG"
+mkdir -p "$BUILD_CTX"
+cat > "$BUILD_CTX/Dockerfile" <<'EOF'
+FROM alpine
+ARG MESSAGE=default-message
+ENV GREETING="hello $MESSAGE"
+WORKDIR /srv/demo
+COPY payload.txt /etc/payload.txt
+RUN echo "$GREETING $(cat /etc/payload.txt)" > /marker && test -f /build/payload.txt
+ENTRYPOINT ["/bin/sh", "-c"]
+CMD ["cat /marker"]
+EOF
+echo world > "$BUILD_CTX/payload.txt"
+if $BIN build -t "$BUILD_IMG" "$BUILD_CTX" >/dev/null 2>&1; then ok "build Dockerfile"; else bad "build Dockerfile"; fi
+check "image CMD runs" "hello default-message world" "$($BIN run -r "$BUILD_IMG" 2>/dev/null)"
+check "run args replace CMD" "overridden" "$($BIN run -r "$BUILD_IMG" 'echo overridden' 2>/dev/null)"
+
+cat > "$BUILD_CTX/Dockerfile" <<'EOF'
+FROM alpine
+COPY --files-from=list.txt /dest/
+CMD ["/bin/sh", "-c", "cat /dest/x.txt /dest/y.txt"]
+EOF
+printf 'x.txt\ny.txt\n' > "$BUILD_CTX/list.txt"
+echo x > "$BUILD_CTX/x.txt"
+echo y > "$BUILD_CTX/y.txt"
+rm -rf "$BUILD_IMG"
+if $BIN build -t "$BUILD_IMG" "$BUILD_CTX" >/dev/null 2>&1; then ok "build COPY --files-from"; else bad "build COPY --files-from"; fi
+check "COPY --files-from contents" "x
+y" "$($BIN run -r "$BUILD_IMG" 2>/dev/null)"
+rm -rf "$BUILD_CTX" "$BUILD_IMG"
+
 echo "==> daemon (server/client)"
 if timeout 10 $BIN client status >/dev/null 2>&1; then
   did=$(timeout 10 $BIN client run -- /bin/sh -c 'echo daemon-hello' 2>/dev/null)

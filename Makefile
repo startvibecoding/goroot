@@ -11,12 +11,13 @@ install: build
 	install -Dm755 $(BINARY) $(DESTDIR)$(PREFIX)/bin/$(BINARY)
 
 fmt:
-	gofmt -w *.go sandbox/*.go assets/*.go examples/sdk/*.go
+	gofmt -w *.go buildkit/*.go sandbox/*.go assets/*.go examples/sdk/*.go
 
 vet:
 	go vet ./...
 
 test: build
+	go test ./...
 	./scripts/smoke.sh
 
 # Cross-compiled release artifacts in dist/ (see .github/workflows/release.yml).

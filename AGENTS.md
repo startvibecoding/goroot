@@ -40,8 +40,8 @@ JSON and passes it via **`GOROOT_SPEC`**. `sandbox.Init()` (called first thing i
 `os/exec` + `syscall.SysProcAttr.Cloneflags`; uid/gid mapping via
 `UidMappings`/`GidMappings`.
 
-Top-level CLI subcommands (`main.go`): `run`, `extract`/`pull`, `doctor`/`check`,
-`server`/`daemon`, `client`, `version`, `help`.
+Top-level CLI subcommands (`main.go`): `run`, `extract`/`pull`, `build`,
+`doctor`/`check`, `server`/`daemon`, `client`, `version`, `help`.
 
 ## Layout
 
@@ -57,7 +57,9 @@ Three packages:
 | `run.go` | foreground `run`: wires stdio + signal-derived context into `sandbox.Run` |
 | `doctor.go` | `doctor` command (uses `sandbox.Detect`) |
 | `extract.go` | `extract` command (URL/local fetch) + `sandbox.Extract` |
-| `assets.go` | resolve built-in rootfs from `assets` pkg into `~/.cache/goroot` |
+| `build.go` | `build` command: local Dockerfile compatibility and image resolution |
+| `assets.go` | resolve built-in rootfs or a local goroot image into the run spec |
+| `buildkit/*.go` | Dockerfile parser, build planner, local image metadata, safe tar helpers |
 | `protocol.go` | daemon wire protocol + `~/.goroot` paths |
 | `daemon.go` | `server`: task manager, unix-socket listener, log streaming |
 | `client.go` | `client` subcommands |
