@@ -135,6 +135,32 @@ check "COPY --files-from contents" "x
 y" "$($BIN run -r "$BUILD_IMG" 2>/dev/null)"
 rm -rf "$BUILD_CTX" "$BUILD_IMG"
 
+# Regression: a fresh GOROOT_HOME (~/.goroot/images absent) must not fail.
+FRESH_HOME=$(mktemp -d)
+mkdir -p "$BUILD_CTX" && echo hello > "$BUILD_CTX/payload.txt"
+printf 'FROM alpine\nCOPY payload.txt /payload.txt\n' > "$BUILD_CTX/Dockerfile"
+if GOROOT_HOME="$FRESH_HOME" $BIN build -t fresh "$BUILD_CTX" >/dev/null 2>&1; then ok "build with fresh GOROOT_HOME"; else bad "build with fresh GOROOT_HOME"; fi
+rm -rf "$FRESH_HOME" "$BUILD_CTX"
+
+# Regression: FROM <local goroot image> must inherit ENV/ENTRYPOINT/CMD.
+BASE_HOME=$(mktemp -d)
+mkdir -p "$BUILD_CTX" && printf 'x' > "$BUILD_CTX/payload.txt"
+printf 'FROM alpine\nENV BASEVAR=frombase\nENTRYPOINT ["/bin/sh", "-c"]\nCMD ["echo base-default"]\n' > "$BUILD_CTX/Dockerfile"
+GOROOT_HOME="$BASE_HOME" $BIN build -t gbase "$BUILD_CTX" >/dev/null 2>&1
+printf 'FROM gbase\nRUN true\n' > "$BUILD_CTX/Dockerfile"
+if GOROOT_HOME="$BASE_HOME" $BIN build -t gchild "$BUILD_CTX" >/dev/null 2>&1; then ok "build FROM local image"; else bad "build FROM local image"; fi
+check "child inherits base CMD" "base-default" "$(GOROOT_HOME="$BASE_HOME" $BIN run -r "$BASE_HOME/images/gchild" 2>/dev/null)"
+check "child inherits base ENV" "frombase" "$(GOROOT_HOME="$BASE_HOME" $BIN run -r "$BASE_HOME/images/gchild" -- /bin/sh -c 'echo $BASEVAR' 2>/dev/null)"
+# Regression: \${VAR?} on an unset variable must abort the build.
+printf 'FROM alpine\nRUN echo ${REQ?must be set}\n' > "$BUILD_CTX/Dockerfile"
+if $BIN build -t "$BUILD_IMG" "$BUILD_CTX" >/dev/null 2>&1; then bad '\${VAR?} should abort build'; else ok '\${VAR?} aborts build'; fi
+
+# Regression: an empty --files-from list must fail clearly.
+printf 'FROM alpine\nCOPY --files-from=empty.txt /dest/\n' > "$BUILD_CTX/Dockerfile"
+: > "$BUILD_CTX/empty.txt"
+if $BIN build -t "$BUILD_IMG" "$BUILD_CTX" >/dev/null 2>&1; then bad "empty --files-from should fail"; else ok "empty --files-from fails"; fi
+rm -rf "$BUILD_CTX" "$BUILD_IMG"
+
 echo "==> daemon (server/client)"
 if timeout 10 $BIN client status >/dev/null 2>&1; then
   did=$(timeout 10 $BIN client run -- /bin/sh -c 'echo daemon-hello' 2>/dev/null)

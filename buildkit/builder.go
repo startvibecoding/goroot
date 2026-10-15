@@ -2,7 +2,6 @@ package buildkit
 
 import (
 	"archive/tar"
-	"bytes"
 	"compress/gzip"
 	"crypto/sha256"
 	"encoding/hex"
@@ -45,13 +44,13 @@ func (b *Builder) Build(df *Dockerfile) (string, error) {
 	}
 	b.ContextDir = absCtx
 	b.OutputDir = absOut
-	steps, vars, err := Plan(df, absCtx)
+	baseRef, _, err := df.Base()
+	cfg := ImageConfig{Cwd: "/"}
+	rootSrc, err := b.resolveBase(baseRef, &cfg)
 	if err != nil {
 		return "", err
 	}
-	baseRef, _, err := df.Base()
-	cfg := steps[0].Config
-	rootSrc, err := b.resolveBase(baseRef, &cfg)
+	steps, vars, err := PlanWithBase(df, absCtx, cfg)
 	if err != nil {
 		return "", err
 	}
@@ -97,6 +96,10 @@ func (b *Builder) stageOutput(rootSrc string) (string, string, error) {
 	if rootSrc == b.OutputDir || strings.HasPrefix(rootSrc, b.OutputDir+string(os.PathSeparator)) {
 		return "", "", fmt.Errorf("base rootfs cannot be inside output image")
 	}
+	// The output parent may not exist yet (~/.goroot/images on a fresh host).
+	if err := os.MkdirAll(filepath.Dir(b.OutputDir), 0o755); err != nil {
+		return "", "", err
+	}
 	staged, err := os.MkdirTemp(filepath.Dir(b.OutputDir), filepath.Base(b.OutputDir)+".goroot-build-*")
 	if err != nil {
 		return "", "", err
@@ -139,7 +142,11 @@ func (b *Builder) apply(root string, step Step, vars map[string]string) error {
 	instr := step.Instruction
 	switch instr.Name {
 	case "RUN":
-		argv, err := ExecArgs(instr, Expand(vars, instr.RawArgs))
+		expanded, err := ExpandErr(vars, instr.RawArgs)
+		if err != nil {
+			return err
+		}
+		argv, err := ExecArgs(instr, expanded)
 		if err != nil {
 			return err
 		}
@@ -151,22 +158,29 @@ func (b *Builder) apply(root string, step Step, vars map[string]string) error {
 			return err
 		}
 	case "COPY", "ADD":
-		sources, dest, allAtOnce, err := b.parseCopyArgs(instr, Expand(vars, step.Instruction.RawArgs))
+		expanded, err := ExpandErr(vars, step.Instruction.RawArgs)
 		if err != nil {
 			return err
 		}
-		for _, s := range sources {
+		// The list file is read eagerly at apply time.
+		parsed, err := parseCopyArgs(b.ContextDir, instr, expanded, func(list string) ([]string, error) {
+			return b.resolveListFile(instr, list)
+		})
+		if err != nil {
+			return err
+		}
+		for _, s := range parsed.sources {
 			if !strings.Contains(s, "://") {
 				if _, err := ValidateCopySource(b.ContextDir, s); err != nil {
 					return err
 				}
 			}
 		}
-		resolved, err := b.resolveCopySources(sources)
+		resolved, err := b.resolveCopySources(parsed.sources)
 		if err != nil {
 			return err
 		}
-		if err := b.copySources(root, resolved, dest, allAtOnce, instr.Name == "ADD"); err != nil {
+		if err := b.copySources(root, resolved, parsed.dest, parsed.allAtOnce, instr.Name == "ADD"); err != nil {
 			return err
 		}
 	case "WORKDIR":
@@ -185,13 +199,24 @@ type Step struct {
 }
 
 // Plan validates instructions and resolves ARG/ENV variables without touching
-// the filesystem.
+// the filesystem. It starts from the built-in default config.
 func Plan(df *Dockerfile, contextDir string) ([]Step, map[string]string, error) {
+	base := ImageConfig{Cwd: "/", Env: []string{"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", "HOME=/root"}}
+	return PlanWithBase(df, contextDir, base)
+}
+
+// PlanWithBase is Plan seeded with the base image's inherited config so that
+// ENV/ENTRYPOINT/CMD from the FROM image carry into later instructions and the
+// resulting image.
+func PlanWithBase(df *Dockerfile, contextDir string, base ImageConfig) ([]Step, map[string]string, error) {
 	vars := map[string]string{}
-	cfg := ImageConfig{Cwd: "/", Env: []string{"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", "HOME=/root"}}
+	cfg := cloneConfig(base)
 	steps := make([]Step, 0, len(df.Instructions))
 	for _, instr := range df.Instructions {
-		args := Expand(vars, instr.RawArgs)
+		args, err := ExpandErr(vars, instr.RawArgs)
+		if err != nil {
+			return nil, nil, fmt.Errorf("line %d: %s: %w", instr.Line, instr.Name, err)
+		}
 		if instr.Name == "ARG" {
 			name, value, err := parseArg(args)
 			if err != nil {
@@ -209,12 +234,13 @@ func Plan(df *Dockerfile, contextDir string) ([]Step, map[string]string, error) 
 		}
 		switch instr.Name {
 		case "COPY", "ADD":
-			sources, dest, allAtOnce, err := parseStaticCopyArgs(args)
+			// Static validation only: the list file is read at apply time.
+			parsed, err := parseCopyArgs(contextDir, instr, args, nil)
 			if err != nil {
 				return nil, nil, fmt.Errorf("line %d: %s: %w", instr.Line, instr.Name, err)
 			}
-			for _, s := range sources {
-				if allAtOnce {
+			for _, s := range parsed.sources {
+				if parsed.allAtOnce {
 					break
 				}
 				if strings.Contains(s, "://") {
@@ -227,7 +253,7 @@ func Plan(df *Dockerfile, contextDir string) ([]Step, map[string]string, error) 
 					return nil, nil, err
 				}
 			}
-			if !allAtOnce && len(sources) > 1 && !strings.HasSuffix(dest, "/") {
+			if !parsed.allAtOnce && len(parsed.sources) > 1 && !strings.HasSuffix(parsed.dest, "/") {
 				return nil, nil, fmt.Errorf("line %d: destination must be a directory when more than one source is specified", instr.Line)
 			}
 		case "MAINTAINER":
@@ -281,43 +307,59 @@ func (b *Builder) copySources(root string, sources []string, dest string, allAtO
 	copyAsDir := allAtOnce || len(sources) > 1 || strings.HasSuffix(target, "/")
 	if !copyAsDir {
 		src := sources[0]
-		data, name, err := b.readSource(src)
+		rc, name, err := b.openSource(src)
 		if err != nil {
 			return err
 		}
+		defer rc.Close()
 		if isArchiveName(name) {
 			if err := os.MkdirAll(destPath, 0o755); err != nil {
 				return err
 			}
-			return extractTar(bytes.NewReader(data), name, destPath, 0)
+			return extractTar(rc, name, destPath, 0)
 		}
 		if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
 			return err
 		}
-		return writeMaybeExecutable(destPath, data, name)
+		return writeFromReader(destPath, rc, filepath.Join(b.ContextDir, src))
 	}
 	if err := os.MkdirAll(destPath, 0o755); err != nil {
 		return err
 	}
 	for _, src := range sources {
-		data, name, err := b.readSource(src)
+		rc, name, err := b.openSource(src)
 		if err != nil {
 			return err
 		}
 		if isArchiveName(name) && allowAdd && !allAtOnce {
-			if err := extractTar(bytes.NewReader(data), name, destPath, 0); err != nil {
+			err = extractTar(rc, name, destPath, 0)
+			rc.Close()
+			if err != nil {
 				return err
 			}
 			continue
 		}
-		if err := writeMaybeExecutable(filepath.Join(destPath, filepath.Base(name)), data, name); err != nil {
+		err = writeFromReader(filepath.Join(destPath, filepath.Base(name)), rc, src)
+		rc.Close()
+		if err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (b *Builder) readSource(src string) ([]byte, string, error) {
+// source is an opened COPY/ADD payload. Name is used for archive detection and
+// as the default destination basename.
+type source struct {
+	io.ReadCloser
+	name string
+}
+
+// openSource streams a COPY/ADD source without buffering it in memory. Remote
+// sources are the live HTTP body; context directories are piped through an
+// in-memory tar.gz writer pair (tar needs sequential headers, so the gzip
+// buffer is bounded by compression ratio, not file size).
+func (b *Builder) openSource(src string) (io.ReadCloser, string, error) {
 	if strings.Contains(src, "://") {
 		if !strings.HasPrefix(src, "http://") && !strings.HasPrefix(src, "https://") {
 			return nil, "", fmt.Errorf("unsupported URL scheme in ADD %q", src)
@@ -331,19 +373,15 @@ func (b *Builder) readSource(src string) ([]byte, string, error) {
 		if err != nil {
 			return nil, "", err
 		}
-		defer resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
 			return nil, "", fmt.Errorf("GET %s: %s", src, resp.Status)
-		}
-		data, err := io.ReadAll(resp.Body)
-		if err != nil {
-			return nil, "", err
 		}
 		name := path.Base(resp.Request.URL.Path)
 		if name == "" || name == "." || name == "/" {
 			name = "download"
 		}
-		return data, name, nil
+		return resp.Body, name, nil
 	}
 	abs, err := ValidateCopySource(b.ContextDir, src)
 	if err != nil {
@@ -354,169 +392,161 @@ func (b *Builder) readSource(src string) ([]byte, string, error) {
 		return nil, "", err
 	}
 	if st.IsDir() {
-		var buf bytes.Buffer
-		zw := gzip.NewWriter(&buf)
-		tw := tar.NewWriter(zw)
-		err := filepath.Walk(abs, func(p string, info os.FileInfo, err error) error {
-			if err != nil {
-				return err
-			}
-			rel, relErr := filepath.Rel(abs, p)
-			if relErr != nil {
-				return relErr
-			}
-			if rel == "." {
-				return nil
-			}
-			hdr, hdrErr := tar.FileInfoHeader(info, "")
-			if hdrErr != nil {
-				return hdrErr
-			}
-			hdr.Name = filepath.ToSlash(rel)
-			if info.Mode()&os.ModeSymlink != 0 {
-				hdr.Linkname, _ = os.Readlink(p)
-			}
-			if wrErr := tw.WriteHeader(hdr); wrErr != nil {
-				return wrErr
-			}
-			if info.Mode().IsRegular() {
-				f, openErr := os.Open(p)
-				if openErr != nil {
-					return openErr
-				}
-				defer f.Close()
-				if _, cpErr := io.Copy(tw, f); cpErr != nil {
-					return cpErr
-				}
-			}
-			return nil
-		})
+		r, w := io.Pipe()
+		go func() {
+			err := writeDirTarGz(w, abs)
+			w.CloseWithError(err)
+		}()
+		return r, abs + ".tar.gz", nil
+	}
+	f, err := os.Open(abs)
+	if err != nil {
+		return nil, "", err
+	}
+	return f, abs, nil
+}
+
+// writeDirTarGz streams a directory as tar.gz into w.
+func writeDirTarGz(w io.Writer, abs string) error {
+	zw := gzip.NewWriter(w)
+	tw := tar.NewWriter(zw)
+	err := filepath.Walk(abs, func(p string, info os.FileInfo, err error) error {
 		if err != nil {
-			return nil, "", err
+			return err
 		}
-		if err := tw.Close(); err != nil {
-			return nil, "", err
+		rel, relErr := filepath.Rel(abs, p)
+		if relErr != nil {
+			return relErr
 		}
-		if err := zw.Close(); err != nil {
-			return nil, "", err
+		if rel == "." {
+			return nil
 		}
-		return buf.Bytes(), abs + ".tar.gz", nil
+		hdr, hdrErr := tar.FileInfoHeader(info, "")
+		if hdrErr != nil {
+			return hdrErr
+		}
+		hdr.Name = filepath.ToSlash(rel)
+		if info.Mode()&os.ModeSymlink != 0 {
+			hdr.Linkname, _ = os.Readlink(p)
+		}
+		if wrErr := tw.WriteHeader(hdr); wrErr != nil {
+			return wrErr
+		}
+		if info.Mode().IsRegular() {
+			f, openErr := os.Open(p)
+			if openErr != nil {
+				return openErr
+			}
+			_, cpErr := io.Copy(tw, f)
+			f.Close()
+			if cpErr != nil {
+				return cpErr
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return err
 	}
-	data, err := os.ReadFile(abs)
-	return data, abs, err
+	if err := tw.Close(); err != nil {
+		return err
+	}
+	return zw.Close()
 }
 
-func (b *Builder) parseCopyArgs(instr Instruction, args string) ([]string, string, bool, error) {
-	return parseCopyArgsWithSource(b.ContextDir, instr, args)
+// resolveListFile reads a --files-from list file from the build context and
+// returns its non-comment, non-empty lines.
+func (b *Builder) resolveListFile(instr Instruction, list string) ([]string, error) {
+	absList, err := ValidateCopySource(b.ContextDir, list)
+	if err != nil {
+		return nil, err
+	}
+	listData, err := os.ReadFile(absList)
+	if err != nil {
+		return nil, fmt.Errorf("line %d: %w", instr.Line, err)
+	}
+	var sources []string
+	for _, l := range strings.Split(string(listData), "\n") {
+		l = strings.TrimSpace(l)
+		if l != "" && !strings.HasPrefix(l, "#") {
+			sources = append(sources, l)
+		}
+	}
+	if len(sources) == 0 {
+		return nil, fmt.Errorf("line %d: --files-from list %q is empty", instr.Line, list)
+	}
+	return sources, nil
 }
 
-// Plan intentionally validates only static syntax; files produced by RUN are not
-// required to exist yet.
-func parseStaticCopyArgs(args string) ([]string, string, bool, error) {
+// copyArgs is the parsed form of a COPY/ADD instruction.
+type copyArgs struct {
+	sources   []string
+	dest      string
+	allAtOnce bool   // --files-from: sources come from a list file
+	listFile  string // --files-from value, resolved when listResolver is set
+}
+
+// parseCopyArgs parses COPY/ADD arguments. When listResolver is non-nil,
+// --files-from eagerly reads and resolves the list file (used at apply time);
+// otherwise only the list filename is recorded (used by Plan, where files
+// produced by RUN are not required to exist yet).
+func parseCopyArgs(contextDir string, instr Instruction, args string, listResolver func(string) ([]string, error)) (copyArgs, error) {
 	fields, err := shellFields(args)
 	if err != nil {
-		return nil, "", false, err
+		return copyArgs{}, err
 	}
-	for len(fields) > 1 && strings.HasPrefix(fields[0], "--") {
-		name, _, hasValue := strings.Cut(fields[0], "=")
-		switch name {
-		case "--from", "--chown", "--chmod", "--link", "--parents":
-			if !hasValue && (name == "--from" || name == "--chown" || name == "--chmod") {
-				if len(fields) < 2 {
-					return nil, "", false, fmt.Errorf("flag %s needs a value", name)
-				}
-				fields = fields[2:]
-			} else {
-				fields = fields[1:]
-			}
-		case "--files-from":
-			if !hasValue && len(fields) < 2 {
-				return nil, "", false, fmt.Errorf("%s needs a value", name)
-			}
-			if !hasValue {
-				fields = fields[2:]
-			} else {
-				fields = fields[1:]
-			}
-			if len(fields) == 0 {
-				return nil, "", false, fmt.Errorf("requires a source and destination")
-			}
-			return nil, fields[len(fields)-1], true, nil
-		default:
-			return nil, "", false, fmt.Errorf("unknown flag %q", fields[0])
-		}
-	}
-	if len(fields) < 2 {
-		return nil, "", false, fmt.Errorf("requires a source and destination")
-	}
-	return fields[:len(fields)-1], fields[len(fields)-1], false, nil
-}
-
-func parseCopyArgsWithSource(contextDir string, instr Instruction, args string) (sources []string, dest string, allAtOnce bool, err error) {
-	fields, err := shellFields(args)
-	if err != nil {
-		return nil, "", false, err
-	}
-	for len(fields) > 1 && strings.HasPrefix(fields[0], "--") {
+	var out copyArgs
+	for len(fields) > 0 && strings.HasPrefix(fields[0], "--") {
+		// --files-from may be followed by only the destination, so allow a
+		// single remaining field inside the loop.
 		name, value, hasValue := strings.Cut(fields[0], "=")
 		switch name {
 		case "--from", "--chown", "--chmod", "--link", "--parents":
 			if !hasValue && (name == "--from" || name == "--chown" || name == "--chmod") {
 				if len(fields) < 2 {
-					return nil, "", false, fmt.Errorf("flag %s needs a value", name)
+					return copyArgs{}, fmt.Errorf("flag %s needs a value", name)
 				}
 				fields = fields[2:]
 			} else {
 				fields = fields[1:]
 			}
 		case "--files-from":
-			allAtOnce = true
+			out.allAtOnce = true
 			if !hasValue {
 				if len(fields) < 2 {
-					return nil, "", false, fmt.Errorf("%s needs a value", name)
+					return copyArgs{}, fmt.Errorf("%s needs a value", name)
 				}
 				value = fields[1]
 				fields = fields[2:]
 			} else {
 				fields = fields[1:]
 			}
-			absList, verr := ValidateCopySource(contextDir, value)
-			if verr != nil {
-				return nil, "", false, verr
-			}
-			listData, _, rerr := readFileAt(absList, instr.Line)
-			if rerr != nil {
-				return nil, "", false, rerr
-			}
-			for _, l := range strings.Split(string(listData), "\n") {
-				l = strings.TrimSpace(l)
-				if l != "" && !strings.HasPrefix(l, "#") {
-					sources = append(sources, l)
+			out.listFile = value
+			if listResolver != nil {
+				out.sources, err = listResolver(value)
+				if err != nil {
+					return copyArgs{}, err
 				}
 			}
-			dest = fields[len(fields)-1]
-			return sources, dest, allAtOnce, nil
 		default:
-			return nil, "", false, fmt.Errorf("unknown flag %q", fields[0])
+			return copyArgs{}, fmt.Errorf("unknown flag %q", fields[0])
 		}
 	}
-	if len(fields) < 2 {
-		return nil, "", false, fmt.Errorf("requires a source and destination")
+	if len(fields) < 1 || (len(fields) < 2 && !out.allAtOnce) {
+		return copyArgs{}, fmt.Errorf("requires a source and destination")
 	}
-	dest = fields[len(fields)-1]
-	sources = fields[:len(fields)-1]
-	if len(sources) == 0 {
-		return nil, "", false, fmt.Errorf("no source files")
+	out.dest = fields[len(fields)-1]
+	if out.allAtOnce && listResolver == nil {
+		// Static validation: the list file provides the sources at apply time.
+		return out, nil
 	}
-	return sources, dest, allAtOnce, nil
-}
-
-func readFileAt(abs string, line int) ([]byte, string, error) {
-	b, err := os.ReadFile(abs)
-	if err != nil {
-		return nil, "", fmt.Errorf("line %d: %w", line, err)
+	if out.sources == nil {
+		out.sources = fields[:len(fields)-1]
 	}
-	return b, abs, nil
+	if len(out.sources) == 0 {
+		return copyArgs{}, fmt.Errorf("no source files")
+	}
+	return out, nil
 }
 
 func parseArg(s string) (name, value string, err error) {
@@ -566,7 +596,9 @@ func extractTar(r io.Reader, name, dest string, strip int) error {
 	return ExtractLayer(r, name, dest, strip)
 }
 
-func writeMaybeExecutable(dest string, data []byte, src string) error {
+// writeFromReader streams src into dest, preserving the executable bit of the
+// original file when src is local.
+func writeFromReader(dest string, r io.Reader, src string) error {
 	mode := os.FileMode(0o644)
 	if st, err := os.Stat(src); err == nil && st.Mode()&0o111 != 0 {
 		mode = 0o755
@@ -579,7 +611,7 @@ func writeMaybeExecutable(dest string, data []byte, src string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := f.Write(data); err != nil {
+	if _, err := io.Copy(f, r); err != nil {
 		f.Close()
 		os.Remove(tmp)
 		return err

@@ -89,7 +89,7 @@ func applyImageConfig(spec *sandbox.Spec) error {
 	spec.Env = append(append([]string(nil), cfg.Env...), spec.Env...)
 	if len(spec.Argv) == 0 {
 		spec.Argv = append(append([]string(nil), cfg.Entrypoint...), cfg.Cmd...)
-	} else if len(cfg.Entrypoint) > 0 && !equalArgs(spec.Argv[:1], cfg.Entrypoint) {
+	} else if len(cfg.Entrypoint) > 0 && !hasPrefixArgs(spec.Argv, cfg.Entrypoint) {
 		// Mimic docker run: positional args replace CMD but retain ENTRYPOINT.
 		spec.Argv = append(append([]string(nil), cfg.Entrypoint...), spec.Argv...)
 	}
@@ -101,6 +101,16 @@ func applyImageConfig(spec *sandbox.Spec) error {
 		spec.UID, spec.GID = uid, gid
 	}
 	return nil
+}
+
+// hasPrefixArgs reports whether argv already starts with entrypoint, so an
+// image whose ENTRYPOINT is ["/bin/sh","-c"] is not prefixed twice when the
+// caller passes its own command.
+func hasPrefixArgs(argv, entrypoint []string) bool {
+	if len(argv) < len(entrypoint) {
+		return false
+	}
+	return equalArgs(argv[:len(entrypoint)], entrypoint)
 }
 
 func equalArgs(a, b []string) bool {

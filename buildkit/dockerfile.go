@@ -197,7 +197,10 @@ func (d *Dockerfile) Base() (ref, tag string, err error) {
 // metadata that affects later instructions or the resulting image.
 func ApplyConfig(cfg *ImageConfig, instr Instruction, vars map[string]string) error {
 	defer syncEnvVars(cfg, vars)
-	args := Expand(vars, instr.RawArgs)
+	args, err := ExpandErr(vars, instr.RawArgs)
+	if err != nil {
+		return fmt.Errorf("line %d: %s: %w", instr.Line, instr.Name, err)
+	}
 	switch instr.Name {
 	case "ENV":
 		values, err := parseKeyValuePairs(args)
@@ -298,6 +301,13 @@ func execForm(instr Instruction, args string) ([]string, error) {
 // untouched for
 // /bin/sh.
 func Expand(vars map[string]string, s string) string {
+	out, _ := ExpandErr(vars, s)
+	return out
+}
+
+// ExpandErr is Expand with error reporting: ${VAR?...} on an unset variable
+// aborts the expansion, matching Docker's build behaviour.
+func ExpandErr(vars map[string]string, s string) (string, error) {
 	var b strings.Builder
 	for i := 0; i < len(s); {
 		if s[i] != '$' {
@@ -322,7 +332,11 @@ func Expand(vars map[string]string, s string) string {
 				i++
 				continue
 			}
-			b.WriteString(expandBraced(vars, s[i+1:i+end]))
+			out, err := expandBraced(vars, s[i+1:i+end])
+			if err != nil {
+				return "", err
+			}
+			b.WriteString(out)
 			i += end + 1
 			continue
 		}
@@ -337,12 +351,12 @@ func Expand(vars map[string]string, s string) string {
 		}
 		b.WriteString(valueFor(vars, name, ""))
 	}
-	return b.String()
+	return b.String(), nil
 }
 
-func expandBraced(vars map[string]string, expr string) string {
+func expandBraced(vars map[string]string, expr string) (string, error) {
 	if validVarName(expr) {
-		return valueFor(vars, expr, "")
+		return valueFor(vars, expr, ""), nil
 	}
 	for _, op := range []string{":-", "?", "+", "-", "="} {
 		idx := strings.Index(expr, op)
@@ -354,24 +368,27 @@ func expandBraced(vars map[string]string, expr string) string {
 		switch op {
 		case ":-", "-", "=":
 			if v == "" {
-				return replacement
+				return replacement, nil
 			}
-			return v
+			return v, nil
 		case "?":
 			if v == "" {
-				// Docker aborts the build. Returning an error through a pure
-				// expansion helper would complicate callers; preserve a diagnostic.
-				return "goroot: required variable " + name + " is not set"
+				// Docker aborts the build on an unset required variable.
+				msg := replacement
+				if msg == "" {
+					msg = "is not set"
+				}
+				return "", fmt.Errorf("required variable %s %s", name, msg)
 			}
-			return v
+			return v, nil
 		case "+":
 			if v != "" {
-				return replacement
+				return replacement, nil
 			}
-			return ""
+			return "", nil
 		}
 	}
-	return "${" + expr + "}"
+	return "${" + expr + "}", nil
 }
 
 func validVarName(s string) bool {
